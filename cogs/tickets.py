@@ -270,7 +270,7 @@ class FermerView(discord.ui.View):
         await interaction.message.edit(embed=embed, view=self)
         embed2 = discord.Embed(title="Donne-nous ton avis sur ton ticket !",
                                description="Afin d'ameliorer le systeme de ticket ou de rendre le staff plus efficace, nous souhaitons receuillir ton avis sur ce ticket.")
-        await interaction.user.send(embed=embed2, view=AvisView())
+        await interaction.user.send(embed=embed2, view=AvisView(interaction.client))
         thread = interaction.channel
         ts = int(time.time()) + 216000
         await thread.send(f"Ce ticket as été fermé par {interaction.user.mention}. Il se supprimera <t:{ts}:R>")
@@ -350,7 +350,7 @@ class TicketCreateView(discord.ui.View):
         except sqlite3.OperationalError as e:
             print(e)
         print("line 218")
-        if raison == "Faire un partenariat":
+        if raison == "Partenariat":
             print("line 220")
             embed5666666 = discord.Embed(title="Bienvenue sur ton ticket partenariat !",
                                          description="Afin de faciliter le travail du staff et te faire gagner du temps, nous souhaitons récuperer les informations du partenariat.",

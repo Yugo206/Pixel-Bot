@@ -9,7 +9,7 @@ class TradeView(discord.ui.View):
         self.trader = trader
         self.annonce = annonce
 
-    @discord.ui.button(label="Accepter le trade", style=discord.ButtonStyle.green)
+    @discord.ui.button(label="Accepter le trade", style=discord.ButtonStyle.green, custom_id="trade:accepter")
     async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.user.id == self.trader.id:
             await interaction.response.send_message("Tu ne peux pas accepter ton propre trade !", ephemeral=True)

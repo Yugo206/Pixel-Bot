@@ -55,6 +55,9 @@ try:
 
         @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="warn:accepter")
         async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
+            for b in self.children:
+                b.disabled = True
+            await interaction.message.edit(view=self)
             conn = sqlite3.connect(DB_PATH)
             cur = conn.cursor()
 
@@ -100,7 +103,8 @@ try:
         @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
         async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
             await interaction.response.send_modal(RaisonrefuserModal(self.membre))
-            button.disabled = True
+            for child in self.children:
+                child.disabled = True
             await interaction.message.edit(view=self)
 
 except Exception as e:
@@ -155,6 +159,7 @@ class Warn(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.check_tempbans.start()
+        bot.add_view(RefuseroracceptercontestationView(None, self.bot, None))
 
     def cog_unload(self):
         self.check_tempbans.cancel()
@@ -388,6 +393,6 @@ class Warn(commands.Cog):
         except Exception as e:
             print(e)
 
-
 async def setup(bot):
     await bot.add_cog(Warn(bot))
+
