@@ -1,15 +1,6 @@
-
-# macOS
 .DS_Store
-
-# Python
 *.pyc
 __pycache__/
-
-# IDE
 .idea/
-
-# Environnement
 .env
-
 INTRO.py
