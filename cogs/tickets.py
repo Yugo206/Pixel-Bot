@@ -4,7 +4,8 @@ import discord
 from discord.ext import commands
 import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from cogs.warn import ContestationView
 
 DB_PATH = os.path.expanduser("~/botdata/database.db")
 print("DB ABS PATH:", os.path.abspath(DB_PATH))
@@ -144,6 +145,7 @@ class SatisfactionView(discord.ui.View):
                 c.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (self.membre.id,))
                 resulttt = c.fetchone()
                 if resulttt[0] is None:
+                    iso_time = datetime.now(timezone.utc).isoformat()
                     c.execute("INSERT INTO utilisateurs (user_id, warn) VALUES (?, 1)", (self.membre.id,))
                     conn.commit()
                     c.execute("INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (?, ?, ?, ?, ?)",
@@ -152,6 +154,12 @@ class SatisfactionView(discord.ui.View):
                     conn.close()
                 elif resulttt[0] is not None:
                     c.execute("UPDATE utilisateurs SET warn = ? WHERE user_id = ?", (resulttt[0] + 1, self.membre.id))
+                    conn.commit()
+                    iso_time = datetime.now(timezone.utc).isoformat()
+                    c.execute(
+                        "INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (?, ?, ?, ?, ?)",
+                        (self.membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket",
+                         int(time.time()), iso_time,))
                     conn.commit()
                     conn.close()
             except sqlite3.OperationalError as e:
@@ -203,29 +211,43 @@ class SatisfactionView(discord.ui.View):
                         )
                         conn.commit()
                     await channel.send(
-                        f"🔨 {self.membre} banni pour **{duration} jour(s)**.\nRaison : 10 avertissements"
-                    )
-            await interaction.response.send_message(f"Le membre viens d'etre averti en MP, merci !", ephemeral=True)
+                        f"🔨 {self.membre} banni pour **{duration} jour(s)**.\nRaison : 10 avertissements")
             if select.values[0] == "Mal":
                 embed = discord.Embed(title="Tu viens d'etre avertit",
-                                      description=f"Tu t'est mal comporté dans ton ticket, donc tu viens de recevoir un avertissement par {interaction.user.mention}. La prochaine fois, reflechit 2 fois a ton comportement avant d'ouvrir un ticket.",
+                                      description=f"Tu t'est mal comporté dans ton ticket, donc tu viens de recevoir un avertissement par {interaction.user.mention}.",
                                       color=discord.Color.red())
 
                 embed.add_field(name="C'est une erreur ?", value="Va vite ouvrir un ticket et transfert ce ticket")
                 embed.set_footer(text="Pixel Party")
             elif select.values[0] == "Pas de reponse":
                 embed = discord.Embed(title="Tu viens d'etre avertit",
-                                     description=f"Tu n'a pas repondu dans ton ticket, donc tu viens de recevoir un avertissement par {interaction.user.mention}. La prochaine fois, reflechit 2 fois avant d'ouvrir un ticket.")
+                                     description=f"Tu n'a pas repondu dans ton ticket, donc tu viens de recevoir un avertissement par {interaction.user.mention}.")
                 embed.add_field(name="C'est une erreur ?", value="Va vite ouvrir un ticket et transfert ce ticket")
                 embed.set_footer(text="Pixel Party")
             try:
-                await self.membre.send(embed=embed)
-            except discord.Forbidden:
+                try:
+                    with sqlite3.connect(DB_PATH) as conn:
+                        c = conn.cursor()
+                        c.execute("SELECT id FROM warns WHERE user_id = ?", (self.membre.id,))
+                        resultate = c.fetchone()
+                except sqlite3.OperationalError as e:
+                    print(e)
+                    pass
+                bot = interaction.client
+                view = ContestationView(self.membre, bot, resultate[0])
+                await self.membre.send(embed=embed, view=view)
+            except Exception as e:
+                print(e)
                 pass
-        else:
-            await interaction.response.send_message("Le membre n'a pas été averti, merci !", ephemeral=True)
-        mess = interaction.message
-        await mess.delete()
+        try:
+            select.disabled = True
+            await interaction.response.edit_message(view=self)
+            time_now = time.time()
+            time_ap = time_now + 86400
+            await interaction.channel.send(f"Ticket fermé, il sera supprimé dans <t:{time}:R>")
+        except Exception as e:
+            print(e)
+            pass
 
 
 class FermerView(discord.ui.View):
@@ -270,9 +292,9 @@ class TicketCreateView(discord.ui.View):
         self.bot = bot
 
     @discord.ui.select(placeholder="Selectionne une option", custom_id="ticket:create", options=[
-        discord.SelectOption(label="Partenariat", value="Pour proposer ou discuter d'un partenariat entre serveur/projet", emoji="🤝"),
-        discord.SelectOption(label="Support technique", value="Pour signer un bug ou demander de l'aide concernant le serveur ou un bot", emoji="🛠️"),
-        discord.SelectOption(label="Demande de rôle", value="Pour demander un rôle spécial, une vérification ou un grade particulier", emoji="🗒️"),
+        discord.SelectOption(label="Partenariat", description="Pour proposer ou discuter d'un partenariat entre serveur/projet", emoji="🤝"),
+        discord.SelectOption(label="Support technique", description="Pour signer un bug ou demander de l'aide concernant le serveur ou un bot", emoji="🛠️"),
+        discord.SelectOption(label="Demande de rôle", description="Pour demander un rôle spécial, une vérification ou un grade particulier", emoji="🗒️"),
         discord.SelectOption(label="Signaler un membre", description="pour signaler un comportement inapproprié du spam ou un non-respect des règles", emoji="🚨"),
         discord.SelectOption(label="Contester une sanction", description="pour discuter d'un mute, kick ou ban que vous jugez injustifié", emoji="⚖️"),
         discord.SelectOption(label="Question générale", description="pour poser des questions sur le serveur, les évènements, ou son fonctionnement", emoji="❓"),

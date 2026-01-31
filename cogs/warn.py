@@ -134,7 +134,7 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
 
 class ContestationView(discord.ui.View):
     def __init__(self, membre, bot, warn):
-        super().__init__()
+        super().__init__(timeout=None)
         self.membre = membre
         self.bot = bot
         self.warn = warn
@@ -161,7 +161,6 @@ class Warn(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def check_tempbans(self):
-        print("🔁 tempban check")
         now = int(time.time())
 
         with sqlite3.connect(DB_PATH) as conn:
@@ -197,7 +196,6 @@ class Warn(commands.Cog):
     @check_tempbans.before_loop
     async def before_tempbans(self):
         await self.bot.wait_until_ready()
-        print("✅ tempban loop ready")
 
     @app_commands.command(name="warn", description="Averti un membre")
     @app_commands.checks.has_permissions(manage_messages=True)

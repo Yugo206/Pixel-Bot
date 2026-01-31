@@ -19,12 +19,7 @@ try:
             embed = discord.Embed(title="Tu as un problème, question ou partenariat ? ?", description="Viens en parler au staff en ouvrant un ticket", color=discord.Color.green())
             embed.add_field(name="Tikets abusifs", value="Tout ticket abusif sera sanctionné", inline=False)
             view = TicketCreateView(self.bot)
-            await channel.send(
-                embed=embed,
-                view=view
-            )
-
-
+            await channel.send(embed=embed, view=view)
     async def setup(bot):
         await bot.add_cog(ticketsconf(bot))
 except Exception as e:

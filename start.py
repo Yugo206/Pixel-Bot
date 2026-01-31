@@ -133,7 +133,6 @@ try:
                     "cogs.visite",
                     "cogs.setupticket",
                     "cogs.partenariat",
-                    "cogs.futuriste",
                     "cogs.warn"
                 ]
 
