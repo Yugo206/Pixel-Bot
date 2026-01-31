@@ -146,6 +146,9 @@ class SatisfactionView(discord.ui.View):
                 if resulttt[0] is None:
                     c.execute("INSERT INTO utilisateurs (user_id, warn) VALUES (?, 1)", (self.membre.id,))
                     conn.commit()
+                    c.execute("INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (?, ?, ?, ?, ?)",
+                              (self.membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket", int(time.time()), iso_time,))
+                    conn.commit()
                     conn.close()
                 elif resulttt[0] is not None:
                     c.execute("UPDATE utilisateurs SET warn = ? WHERE user_id = ?", (resulttt[0] + 1, self.membre.id))
