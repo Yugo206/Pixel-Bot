@@ -139,12 +139,15 @@ class SatisfactionView(discord.ui.View):
     ], custom_id="ticket:satisfaction")
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
         if select.values[0] == "Mal" or select.values[0] == "Pas de reponse":
+            print("id enclenché ligne 142")
             try:
                 conn = sqlite3.connect(DB_PATH, timeout=5.0)
                 c = conn.cursor()
                 c.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (self.membre.id,))
                 resulttt = c.fetchone()
+                print("le resultat est :", resulttt)
                 if resulttt[0] is None:
+                    print("ligne 150 : Résult est none")
                     iso_time = datetime.now(timezone.utc).isoformat()
                     c.execute("INSERT INTO utilisateurs (user_id, warn) VALUES (?, 1)", (self.membre.id,))
                     conn.commit()
@@ -152,7 +155,8 @@ class SatisfactionView(discord.ui.View):
                               (self.membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket", int(time.time()), iso_time,))
                     conn.commit()
                     conn.close()
-                elif resulttt[0] is not None:
+                else:
+                    print("ligne 159 : result est pas none")
                     c.execute("UPDATE utilisateurs SET warn = ? WHERE user_id = ?", (resulttt[0] + 1, self.membre.id))
                     conn.commit()
                     iso_time = datetime.now(timezone.utc).isoformat()
@@ -164,44 +168,73 @@ class SatisfactionView(discord.ui.View):
                     conn.close()
             except sqlite3.OperationalError as e:
                 print(e)
-            warn_count = resulttt[0] + 1
+            if resulttt[0] is None:
+                print("ligne 172 : Result est none donc = 1")
+                warn_count = 1
+            else:
+                warn_count = resulttt[0] + 1
+                print("ligne 176 : result est pas none, donc ", warn_count)
+            iso_time = datetime.now(timezone.utc).isoformat()
             if warn_count == 3 or warn_count == 5 or warn_count == 10:
+                print("warn count est 3, 5 ou 10")
                 if warn_count == 3:
+                    print("warn count est 3")
                     duration = 172800
                     until = datetime.utcnow() + timedelta(hours=48)
+                    print("le temps est ", until)
                     channel = interaction.guild.get_channel(id=1405119711624171645)
                     try:
-                        await self.member.edit(communication_disabled_until=until, reason="3 avertissement")
+                        await self.membre.timeout(until, reason="3 avertissements")
+                        print("membre timeout")
                     except discord.Forbidden:
-                        await channel.send(f"Erreur lors du mute de {self.membre.mention} car il n'est pas ici !")
+                        print("membre forbidden")
+                        await channel.send(
+                            f"Erreur lors du mute de {self.membre.mention} car il n'est pas ici !"
+                        )
                     except discord.HTTPException as e:
-                        await channel.send(f"Impossible de mute {self.membre.mention} : {e}")
+                        print(e)
+                        await channel.send(
+                            f"Impossible de mute {self.membre.mention} : {e}"
+                        )
                     embed = discord.Embed(title="Tu viens d'être mute",
                                           description="Tu as reçu 3 avertissements, tu viens donc d'etre mute 48h sur **Pixel Partie**. Prends le temps de reflechir pendant ton mute, ça evitera le ban 😆")
                     try:
                         await self.membre.send(embed=embed)
+                        print("envoyé ")
                     except discord.Forbidden:
                         pass
                 elif warn_count == 5:
+                    print("warn = 5")
                     duration = 604800
                     until = datetime.utcnow() + timedelta(days=7)
+                    print("temps est ", until)
                     channel = interaction.guild.get_channel(id=1405119711624171645)
                     try:
-                        await self.membre.edit(communication_disabled_until=until, reason="3 avertissement")
+                        await self.membre.timeout(until, reason="5 avertissements")
+                        print("membre timeout")
                     except discord.Forbidden:
-                        await channel.send(f"Erreur lors du mute de {self.membre.mention} car il n'est pas ici !")
+                        print("membre forbidden")
+                        await channel.send(
+                            f"Erreur lors du mute de {self.membre.mention} car il n'est pas ici !"
+                        )
                     except discord.HTTPException as e:
-                        await channel.send(f"Impossible de mute {self.membre.mention} : {e}")
+                        print(e)
+                        await channel.send(
+                            f"Impossible de mute {self.membre.mention} : {e}"
+                        )
                     embed = discord.Embed(title="Tu viens d'être mute",
                                           description="Tu as reçu 5 avertissements, tu viens donc d'etre mute 7 Jours sur **Pixel Partie**. Prends le temps de reflechir pendant ton mute, ça evitera le ban 😆")
                     try:
                         await self.membre.send(embed=embed)
+                        print("membre averti du timeout")
                     except discord.Forbidden:
                         pass
                 elif warn_count == 10:
+                    print("warn count est 10")
                     duration = 30
                     channel = interaction.guild.get_channel(id=1405119711624171645)
                     unban_at = int(time.time()) + duration * 86400
+                    print("unban_at = ", unban_at)
                     await interaction.guild.ban(self.membre, reason="10 avertissements")
                     with sqlite3.connect(DB_PATH) as conn:
                         c = conn.cursor()
@@ -210,6 +243,7 @@ class SatisfactionView(discord.ui.View):
                             (self.membre.id, channel.guild.id, unban_at)
                         )
                         conn.commit()
+                        print("SQLITE sans erreur")
                     await channel.send(
                         f"🔨 {self.membre} banni pour **{duration} jour(s)**.\nRaison : 10 avertissements")
             if select.values[0] == "Mal":
@@ -242,9 +276,6 @@ class SatisfactionView(discord.ui.View):
         try:
             select.disabled = True
             await interaction.response.edit_message(view=self)
-            time_now = time.time()
-            time_ap = time_now + 86400
-            await interaction.channel.send(f"Ticket fermé, il sera supprimé dans <t:{time}:R>")
         except Exception as e:
             print(e)
             pass
@@ -272,7 +303,7 @@ class FermerView(discord.ui.View):
                                description="Afin d'ameliorer le systeme de ticket ou de rendre le staff plus efficace, nous souhaitons receuillir ton avis sur ce ticket.")
         await interaction.user.send(embed=embed2, view=AvisView(interaction.client))
         thread = interaction.channel
-        ts = int(time.time()) + 216000
+        ts = int((datetime.utcnow() + timedelta(seconds=86400)).timestamp())
         await thread.send(f"Ce ticket as été fermé par {interaction.user.mention}. Il se supprimera <t:{ts}:R>")
         await thread.edit(locked=True, archived=True)
         try:

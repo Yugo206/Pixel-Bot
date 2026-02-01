@@ -55,57 +55,61 @@ try:
 
         @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="warn:accepter")
         async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
-            for b in self.children:
-                b.disabled = True
-            await interaction.message.edit(view=self)
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-
-            cur.execute(
-                "SELECT warn FROM utilisateurs WHERE user_id = ?",
-                (self.membre.id,)
-            )
-            row = cur.fetchone()
-            warn_actuel = row[0] if row else 0
-            warn_ap = max(warn_actuel - 1, 0)
-
-            cur.execute(
-                "UPDATE utilisateurs SET warn = ? WHERE user_id = ?",
-                (warn_ap, self.membre.id)
-            )
-
-            cur.execute(
-                "DELETE FROM warns WHERE id = ?",
-                (self.warn[0],)
-            )
-
-            conn.commit()
-            conn.close()
-
-            embed = discord.Embed(
-                title="Contestation acceptée",
-                description="Ton warn a été retiré",
-                color=discord.Color.green()
-            )
-            embed.add_field(name="Modérateur :", value=interaction.user.mention, inline=False)
-
             try:
-                await self.membre.send(embed=embed)
-            except discord.Forbidden:
-                pass
+                for b in self.children:
+                    b.disabled = True
+                await interaction.message.edit(view=self)
+                conn = sqlite3.connect(DB_PATH)
+                cur = conn.cursor()
 
-            await interaction.response.send_message("Sanction retirée ✅", ephemeral=True)
+                cur.execute(
+                    "SELECT warn FROM utilisateurs WHERE user_id = ?",
+                    (self.membre.id,)
+                )
+                row = cur.fetchone()
+                warn_actuel = row[0] if row else 0
+                warn_ap = max(warn_actuel - 1, 0)
 
-            for b in self.children:
-                b.disabled = True
-            await interaction.message.edit(view=self)
+                cur.execute(
+                    "UPDATE utilisateurs SET warn = ? WHERE user_id = ?",
+                    (warn_ap, self.membre.id)
+                )
 
-        @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
-        async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
-            await interaction.response.send_modal(RaisonrefuserModal(self.membre))
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
+                cur.execute(
+                    "DELETE FROM warns WHERE id = ?",
+                    (self.warn[0],)
+                )
+
+                conn.commit()
+                conn.close()
+
+                embed = discord.Embed(
+                    title="Contestation acceptée",
+                    description="Ton warn a été retiré",
+                    color=discord.Color.green()
+                )
+                embed.add_field(name="Modérateur :", value=interaction.user.mention, inline=False)
+
+                try:
+                    await self.membre.send(embed=embed)
+                except discord.Forbidden:
+                    pass
+
+                await interaction.response.send_message("Sanction retirée ✅", ephemeral=True)
+
+                for b in self.children:
+                    b.disabled = True
+                await interaction.message.edit(view=self)
+            except Exception as e:
+                print(e)
+
+            @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
+            async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
+                await interaction.response.send_modal(RaisonrefuserModal(self.membre))
+                for child in self.children:
+                    child.disabled = True
+                await interaction.message.edit(view=self)
+
 
 except Exception as e:
     print(e)
