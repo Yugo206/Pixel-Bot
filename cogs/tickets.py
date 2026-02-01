@@ -132,153 +132,194 @@ class SatisfactionView(discord.ui.View):
         super().__init__(timeout=None)
         self.membre = membre
 
-    @discord.ui.select(options=[
-        discord.SelectOption(label="Super bien !", description="Le ticket s'est bien passé", emoji="🙂"),
-        discord.SelectOption(label="Mal", description="Le membre a insulté / n'a pas respecté le staff", emoji="😕"),
-        discord.SelectOption(label="Pas de reponse", description="Tu a mentionné plusieurs fois le membre, mais pas de réponses.", emoji="🚫")
-    ], custom_id="ticket:satisfaction")
+    @discord.ui.select(
+        options=[
+            discord.SelectOption(label="Super bien !", description="Le ticket s'est bien passé", emoji="🙂"),
+            discord.SelectOption(label="Mal", description="Le membre a insulté / n'a pas respecté le staff", emoji="😕"),
+            discord.SelectOption(label="Pas de reponse",
+                                 description="Tu as mentionné plusieurs fois le membre, mais pas de réponses.",
+                                 emoji="🚫")
+        ],
+        custom_id="ticket:satisfaction"
+    )
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
-        if select.values[0] == "Mal" or select.values[0] == "Pas de reponse":
-            print("id enclenché ligne 142")
-            try:
-                conn = sqlite3.connect(DB_PATH, timeout=5.0)
-                c = conn.cursor()
-                c.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (self.membre.id,))
-                resulttt = c.fetchone()
-                print("le resultat est :", resulttt)
-                if resulttt[0] is None:
-                    print("ligne 150 : Résult est none")
-                    iso_time = datetime.now(timezone.utc).isoformat()
-                    c.execute("INSERT INTO utilisateurs (user_id, warn) VALUES (?, 1)", (self.membre.id,))
-                    conn.commit()
-                    c.execute("INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (?, ?, ?, ?, ?)",
-                              (self.membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket", int(time.time()), iso_time,))
-                    conn.commit()
-                    conn.close()
-                else:
-                    print("ligne 159 : result est pas none")
-                    c.execute("UPDATE utilisateurs SET warn = ? WHERE user_id = ?", (resulttt[0] + 1, self.membre.id))
-                    conn.commit()
-                    iso_time = datetime.now(timezone.utc).isoformat()
-                    c.execute(
-                        "INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (?, ?, ?, ?, ?)",
-                        (self.membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket",
-                         int(time.time()), iso_time,))
-                    conn.commit()
-                    conn.close()
-            except sqlite3.OperationalError as e:
-                print(e)
-            if resulttt[0] is None:
-                print("ligne 172 : Result est none donc = 1")
-                warn_count = 1
-            else:
-                warn_count = resulttt[0] + 1
-                print("ligne 176 : result est pas none, donc ", warn_count)
-            iso_time = datetime.now(timezone.utc).isoformat()
-            if warn_count == 3 or warn_count == 5 or warn_count == 10:
-                print("warn count est 3, 5 ou 10")
-                if warn_count == 3:
-                    print("warn count est 3")
-                    duration = 172800
-                    until = datetime.utcnow() + timedelta(hours=48)
-                    print("le temps est ", until)
-                    channel = interaction.guild.get_channel(id=1405119711624171645)
-                    try:
-                        await self.membre.timeout(until, reason="3 avertissements")
-                        print("membre timeout")
-                    except discord.Forbidden:
-                        print("membre forbidden")
-                        await channel.send(
-                            f"Erreur lors du mute de {self.membre.mention} car il n'est pas ici !"
-                        )
-                    except discord.HTTPException as e:
-                        print(e)
-                        await channel.send(
-                            f"Impossible de mute {self.membre.mention} : {e}"
-                        )
-                    embed = discord.Embed(title="Tu viens d'être mute",
-                                          description="Tu as reçu 3 avertissements, tu viens donc d'etre mute 48h sur **Pixel Partie**. Prends le temps de reflechir pendant ton mute, ça evitera le ban 😆")
-                    try:
-                        await self.membre.send(embed=embed)
-                        print("envoyé ")
-                    except discord.Forbidden:
-                        pass
-                elif warn_count == 5:
-                    print("warn = 5")
-                    duration = 604800
-                    until = datetime.utcnow() + timedelta(days=7)
-                    print("temps est ", until)
-                    channel = interaction.guild.get_channel(id=1405119711624171645)
-                    try:
-                        await self.membre.timeout(until, reason="5 avertissements")
-                        print("membre timeout")
-                    except discord.Forbidden:
-                        print("membre forbidden")
-                        await channel.send(
-                            f"Erreur lors du mute de {self.membre.mention} car il n'est pas ici !"
-                        )
-                    except discord.HTTPException as e:
-                        print(e)
-                        await channel.send(
-                            f"Impossible de mute {self.membre.mention} : {e}"
-                        )
-                    embed = discord.Embed(title="Tu viens d'être mute",
-                                          description="Tu as reçu 5 avertissements, tu viens donc d'etre mute 7 Jours sur **Pixel Partie**. Prends le temps de reflechir pendant ton mute, ça evitera le ban 😆")
-                    try:
-                        await self.membre.send(embed=embed)
-                        print("membre averti du timeout")
-                    except discord.Forbidden:
-                        pass
-                elif warn_count == 10:
-                    print("warn count est 10")
-                    duration = 30
-                    channel = interaction.guild.get_channel(id=1405119711624171645)
-                    unban_at = int(time.time()) + duration * 86400
-                    print("unban_at = ", unban_at)
-                    await interaction.guild.ban(self.membre, reason="10 avertissements")
-                    with sqlite3.connect(DB_PATH) as conn:
-                        c = conn.cursor()
-                        c.execute(
-                            "INSERT INTO temp_bans (user_id, guild_id, unban_at) VALUES (?, ?, ?)",
-                            (self.membre.id, channel.guild.id, unban_at)
-                        )
-                        conn.commit()
-                        print("SQLITE sans erreur")
-                    await channel.send(
-                        f"🔨 {self.membre} banni pour **{duration} jour(s)**.\nRaison : 10 avertissements")
-            if select.values[0] == "Mal":
-                embed = discord.Embed(title="Tu viens d'etre avertit",
-                                      description=f"Tu t'est mal comporté dans ton ticket, donc tu viens de recevoir un avertissement par {interaction.user.mention}.",
-                                      color=discord.Color.red())
+        selected_value = select.values[0]
 
-                embed.add_field(name="C'est une erreur ?", value="Va vite ouvrir un ticket et transfert ce ticket")
-                embed.set_footer(text="Pixel Party")
-            elif select.values[0] == "Pas de reponse":
-                embed = discord.Embed(title="Tu viens d'etre avertit",
-                                     description=f"Tu n'a pas repondu dans ton ticket, donc tu viens de recevoir un avertissement par {interaction.user.mention}.")
-                embed.add_field(name="C'est une erreur ?", value="Va vite ouvrir un ticket et transfert ce ticket")
-                embed.set_footer(text="Pixel Party")
-            try:
-                try:
-                    with sqlite3.connect(DB_PATH) as conn:
-                        c = conn.cursor()
-                        c.execute("SELECT id FROM warns WHERE user_id = ?", (self.membre.id,))
-                        resultate = c.fetchone()
-                except sqlite3.OperationalError as e:
-                    print(e)
-                    pass
-                bot = interaction.client
-                view = ContestationView(self.membre, bot, resultate[0])
-                await self.membre.send(embed=embed, view=view)
-            except Exception as e:
-                print(e)
-                pass
+        # Cas positif : rien à faire sauf désactiver le select
+        if selected_value == "Super bien !":
+            await self._disable_and_respond(interaction)
+            return
+
+        # Cas négatifs : "Mal" ou "Pas de reponse"
+        warn_count = 0
+        warn_id = None
+
         try:
-            select.disabled = True
-            await interaction.response.edit_message(view=self)
+            with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+                c = conn.cursor()
+
+                # Récupérer le nombre de warns actuel
+                c.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (self.membre.id,))
+                result = c.fetchone()
+
+                iso_time = datetime.now(timezone.utc).isoformat()
+
+                if result is None:
+                    # L'utilisateur n'existe pas dans la table → on l'insère
+                    c.execute("INSERT INTO utilisateurs (user_id, warn) VALUES (?, 1)", (self.membre.id,))
+                    warn_count = 1
+                elif result[0] is None:
+                    # L'utilisateur existe mais warn est NULL → on met à 1
+                    c.execute("UPDATE utilisateurs SET warn = 1 WHERE user_id = ?", (self.membre.id,))
+                    warn_count = 1
+                else:
+                    # L'utilisateur existe avec un compteur → on incrémente
+                    warn_count = result[0] + 1
+                    c.execute("UPDATE utilisateurs SET warn = ? WHERE user_id = ?", (warn_count, self.membre.id))
+
+                # Insérer le warn dans la table warns
+                c.execute(
+                    "INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (?, ?, ?, ?, ?)",
+                    (self.membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket",
+                     int(time.time()), iso_time)
+                )
+                conn.commit()
+
+                # Récupérer l'ID du warn qu'on vient d'insérer
+                warn_id = c.lastrowid  # ← Méthode correcte pour récupérer le dernier ID inséré
+
+        except sqlite3.OperationalError as e:
+            print(f"Erreur SQLite: {e}")
+            await interaction.response.send_message("❌ Une erreur est survenue avec la base de données.",
+                                                    ephemeral=True)
+            return
+
+        # Appliquer les sanctions selon le nombre de warns
+        await self._apply_sanctions(interaction, warn_count)
+
+        # Créer l'embed d'avertissement
+        embed = self._create_warn_embed(selected_value, interaction.user)
+
+        # Envoyer le message au membre
+        try:
+            bot = interaction.client
+            view = ContestationView(self.membre, bot, warn_id)
+            await self.membre.send(embed=embed, view=view)
+        except discord.Forbidden:
+            print(f"Impossible d'envoyer un DM à {self.membre}")
         except Exception as e:
-            print(e)
+            print(f"Erreur envoi DM: {e}")
+
+        # Désactiver le select et répondre
+        await self._disable_and_respond(interaction)
+
+    def _create_warn_embed(self, selected_value: str, modo: discord.User) -> discord.Embed:
+        """Crée l'embed d'avertissement selon le type de problème."""
+        if selected_value == "Mal":
+            embed = discord.Embed(
+                title="Tu viens d'être averti",
+                description=f"Tu t'es mal comporté dans ton ticket, donc tu viens de recevoir un avertissement par {modo.mention}.",
+                color=discord.Color.red()
+            )
+        else:  # "Pas de reponse"
+            embed = discord.Embed(
+                title="Tu viens d'être averti",
+                description=f"Tu n'as pas répondu dans ton ticket, donc tu viens de recevoir un avertissement par {modo.mention}.",
+                color=discord.Color.orange()
+            )
+
+        embed.add_field(name="C'est une erreur ?", value="Va vite ouvrir un ticket et conteste cet avertissement")
+        embed.set_footer(text="Pixel Party")
+        return embed
+
+    async def _apply_sanctions(self, interaction: discord.Interaction, warn_count: int):
+        """Applique les sanctions selon le nombre de warns."""
+        channel = interaction.guild.get_channel(1405119711624171645)
+
+        if warn_count == 3:
+            await self._apply_timeout(interaction, channel, hours=48, reason="3 avertissements")
+
+        elif warn_count == 5:
+            await self._apply_timeout(interaction, channel, days=7, reason="5 avertissements")
+
+        elif warn_count == 10:
+            await self._apply_ban(interaction, channel, days=30, reason="10 avertissements")
+
+    async def _apply_timeout(self, interaction: discord.Interaction, channel, hours: int = 0, days: int = 0,
+                             reason: str = ""):
+        """Applique un timeout au membre."""
+        # Utiliser datetime.now(timezone.utc) au lieu de datetime.utcnow() (déprécié)
+        until = datetime.now(timezone.utc) + timedelta(hours=hours, days=days)
+
+        try:
+            await self.membre.timeout(until, reason=reason)
+            print(f"Membre {self.membre} timeout jusqu'à {until}")
+        except discord.Forbidden:
+            if channel:
+                await channel.send(f"❌ Erreur : impossible de mute {self.membre.mention} (permissions insuffisantes)")
+        except discord.HTTPException as e:
+            if channel:
+                await channel.send(f"❌ Impossible de mute {self.membre.mention} : {e}")
+            return
+
+        # Envoyer un DM au membre
+        duration_str = f"{hours}h" if hours else f"{days} jour(s)"
+        embed = discord.Embed(
+            title="Tu viens d'être mute",
+            description=f"Tu as reçu {reason.split()[0]} avertissements, tu viens donc d'être mute {duration_str} sur **Pixel Party**.\nPrends le temps de réfléchir pendant ton mute, ça évitera le ban 😆",
+            color=discord.Color.red()
+        )
+        try:
+            await self.membre.send(embed=embed)
+        except discord.Forbidden:
             pass
+
+    async def _apply_ban(self, interaction: discord.Interaction, channel, days: int, reason: str):
+        """Applique un ban temporaire au membre."""
+        unban_at = int(time.time()) + days * 86400
+
+        try:
+            embed = discord.Embed(title="Tu viens d'être ban", description="Tu t'est recemment mal comporté sur Pixel Party", colour=discord.Color.red())
+            embed.add_field(name="Raison", value="10 avertissements")
+            embed.add_field(name="Temps", value="30 jours")
+            await self.membre.send(embed=embed)
+            await interaction.guild.ban(self.membre, reason=reason)
+        except discord.Forbidden:
+            if channel:
+                await channel.send(f"❌ Erreur : impossible de bannir {self.membre.mention} (permissions insuffisantes)")
+            return
+        except discord.HTTPException as e:
+            if channel:
+                await channel.send(f"❌ Impossible de bannir {self.membre.mention} : {e}")
+            return
+
+        # Enregistrer le ban temporaire
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "INSERT INTO temp_bans (user_id, unban_at) VALUES (?, ?)",
+                    (self.membre.id, unban_at)
+                )
+                conn.commit()
+        except sqlite3.OperationalError as e:
+            print(f"Erreur SQLite temp_bans: {e}")
+
+        if channel:
+            await channel.send(f"🔨 {self.membre} banni pour **{days} jour(s)**.\nRaison : {reason}")
+
+    async def _disable_and_respond(self, interaction: discord.Interaction):
+        """Désactive le select et répond à l'interaction."""
+        # Désactiver tous les enfants de la vue
+        for child in self.children:
+            child.disabled = True
+
+        try:
+            await interaction.response.edit_message(view=self)
+        except discord.InteractionResponded:
+            await interaction.edit_original_response(view=self)
+        except Exception as e:
+            print(f"Erreur lors de la désactivation: {e}")
 
 
 class FermerView(discord.ui.View):
@@ -301,7 +342,7 @@ class FermerView(discord.ui.View):
         await interaction.message.edit(embed=embed, view=self)
         embed2 = discord.Embed(title="Donne-nous ton avis sur ton ticket !",
                                description="Afin d'ameliorer le systeme de ticket ou de rendre le staff plus efficace, nous souhaitons receuillir ton avis sur ce ticket.")
-        await interaction.user.send(embed=embed2, view=AvisView(interaction.client))
+        await self.membre.send(embed=embed2, view=AvisView(interaction.client))
         thread = interaction.channel
         ts = int((datetime.utcnow() + timedelta(seconds=86400)).timestamp())
         await thread.send(f"Ce ticket as été fermé par {interaction.user.mention}. Il se supprimera <t:{ts}:R>")
