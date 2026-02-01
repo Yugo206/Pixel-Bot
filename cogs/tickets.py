@@ -6,8 +6,7 @@ import os
 import asyncio
 from datetime import datetime, timedelta, timezone
 from cogs.warn import ContestationView
-
-DB_PATH = os.path.expanduser("~/botdata/database.db")
+from cogs.setup_database import DB_PATH
 print("DB ABS PATH:", os.path.abspath(DB_PATH))
 
 class AvisModal(discord.ui.Modal, title="Ton avis"):

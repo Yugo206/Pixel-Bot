@@ -9,7 +9,7 @@ import os
 import discord
 from cogs.setupticket import TicketCreateView
 
-DB_PATH = os.path.expanduser("~/botdata/database.db")
+from cogs.setup_database import DB_PATH
 
 class Events(commands.Cog):
     def __init__(self, bot):

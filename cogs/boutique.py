@@ -5,6 +5,9 @@ import sqlite3
 import asyncio
 import time
 
+from cogs.setup_database import DB_PATH
+
+
 class BoutiqueCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -13,7 +16,7 @@ class BoutiqueCog(commands.Cog):
     class AchatSelect(discord.ui.Select):
         def __init__(self):
             print("line 13")
-            conn = sqlite3.connect("database.db")
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             print("line 17")
             try:
@@ -61,7 +64,7 @@ class BoutiqueCog(commands.Cog):
             item_id = int(self.values[0])
             print("Item sélectionné :", item_id)
 
-            conn = sqlite3.connect("database.db")
+            conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
 
             cursor.execute(
@@ -95,7 +98,7 @@ class BoutiqueCog(commands.Cog):
 
                         await interaction.user.add_roles(role)
 
-                        conn = sqlite3.connect("database.db")
+                        conn = sqlite3.connect(DB_PATH)
                         cursor = conn.cursor()
                         cursor.execute(
                             "INSERT INTO roles_temp (user_id, role_id, expires_at) VALUES (?, ?, ?)",
@@ -132,7 +135,7 @@ class BoutiqueCog(commands.Cog):
             color=discord.Color.green()
         )
 
-        conn = sqlite3.connect("database.db")
+        conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
 
         try:

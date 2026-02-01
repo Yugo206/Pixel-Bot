@@ -8,13 +8,13 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from cogs.tickets import TicketCreateView
-DB_PATH = os.path.expanduser("~/botdata/database.db")
+from cogs.setup_database import DB_PATH
 from os import getenv
 from discord.ext.commands import command
 try:
     # Chargement config
     try:
-        Token = os.getenv("DISCORD_TOKEN")
+        Token = os.getenv("PIXEL_TOKEN")
         print(Token)
     except Exception as e:
         print(e)
