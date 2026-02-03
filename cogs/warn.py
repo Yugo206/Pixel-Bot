@@ -6,7 +6,7 @@ import os
 from datetime import datetime, timedelta, timezone
 import time
 from discord.utils import utcnow
-from cogs.setup_database import DB_PATH
+from cogs.setupdatabase import DB_PATH
 class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
     raison = discord.ui.TextInput(
         label="Raison du refus",

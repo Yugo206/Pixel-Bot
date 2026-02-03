@@ -8,7 +8,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from cogs.tickets import TicketCreateView
-from cogs.setup_database import DB_PATH
+from cogs.setupdatabase import DB_PATH
 from os import getenv
 from discord.ext.commands import command
 try:

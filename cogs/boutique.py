@@ -5,7 +5,7 @@ import sqlite3
 import asyncio
 import time
 
-from cogs.setup_database import DB_PATH
+from cogs.setupdatabase import DB_PATH
 
 
 class BoutiqueCog(commands.Cog):

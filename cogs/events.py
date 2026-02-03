@@ -9,7 +9,7 @@ import os
 import discord
 from cogs.setupticket import TicketCreateView
 
-from cogs.setup_database import DB_PATH
+from cogs.setupdatabase import DB_PATH
 
 class Events(commands.Cog):
     def __init__(self, bot):

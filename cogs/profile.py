@@ -6,7 +6,7 @@ import io
 import sqlite3
 import os
 
-from cogs.setup_database import DB_PATH
+from cogs.setupdatabase import DB_PATH
 
 class Profile(commands.Cog):
     def __init__(self, bot):

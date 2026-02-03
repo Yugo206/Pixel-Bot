@@ -12,6 +12,7 @@ class SetupDatabaseCog(commands.Cog):
     @commands.command()
     @commands.has_permissions(administrator=True)
     async def setup_database(self, ctx):
+        print("database setup")
         if ctx.author.guild_permissions.administrator:
             await ctx.message.delete()
             with (sqlite3.connect(DB_PATH) as db):
@@ -76,3 +77,4 @@ class SetupDatabaseCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(SetupDatabaseCog(bot))
+
