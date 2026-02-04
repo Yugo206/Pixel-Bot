@@ -160,7 +160,7 @@ class SatisfactionView(discord.ui.View):
                 c = conn.cursor()
 
                 # Récupérer le nombre de warns actuel
-                c.execute("SELECT warns FROM utilisateurs WHERE user_id = ?", (self.membre.id,))
+                c.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (self.membre.id,))
                 result = c.fetchone()
 
                 iso_time = datetime.now(timezone.utc).isoformat()
