@@ -2,11 +2,10 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import sqlite3
-import asyncio
 import time
 from dotenv import load_dotenv
 load_dotenv()
-from cogs.setupdatabase import DB_PATH
+from utils.setupdatabase import DB_PATH
 
 
 class BoutiqueCog(commands.Cog):

@@ -8,7 +8,7 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 from discord.utils import utcnow
-from cogs.setupdatabase import DB_PATH
+from utils.setupdatabase import DB_PATH
 class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
     raison = discord.ui.TextInput(
         label="Raison du refus",

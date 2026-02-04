@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from datetime import datetime, timedelta, timezone
 from cogs.warn import ContestationView
-from cogs.setupdatabase import DB_PATH
+from utils.setupdatabase import DB_PATH
 print("DB ABS PATH:", os.path.abspath(DB_PATH))
 
 class AvisModal(discord.ui.Modal, title="Ton avis"):
@@ -160,7 +160,7 @@ class SatisfactionView(discord.ui.View):
                 c = conn.cursor()
 
                 # Récupérer le nombre de warns actuel
-                c.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (self.membre.id,))
+                c.execute("SELECT warns FROM utilisateurs WHERE user_id = ?", (self.membre.id,))
                 result = c.fetchone()
 
                 iso_time = datetime.now(timezone.utc).isoformat()

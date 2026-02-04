@@ -1,15 +1,12 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from PIL import Image, ImageDraw, ImageFont
-import io
 import sqlite3
-import os
 from dotenv import load_dotenv
 load_dotenv()
 
 
-from cogs.setupdatabase import DB_PATH
+from utils.setupdatabase import DB_PATH
 
 class Profile(commands.Cog):
     def __init__(self, bot):

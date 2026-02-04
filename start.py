@@ -7,12 +7,12 @@ import asyncio
 import os
 from dotenv import load_dotenv
 load_dotenv()
-from cogs.tickets import TicketCreateView
-from cogs.setupdatabase import DB_PATH
+from utils.setupdatabase import DB_PATH
 from dotenv import load_dotenv
 load_dotenv()
-from os import getenv
-from discord.ext.commands import command
+from utils.setupdatabase import init_db
+init_db()  # ✅ Crée la DB et toutes les tables avant les cogs
+
 try:
     # Chargement config
     try:
@@ -134,8 +134,7 @@ try:
                     "cogs.trade",
                     "cogs.visite",
                     "cogs.setupticket",
-                    "cogs.warn",
-                    "cogs.setupdatabase"
+                    "cogs.warn"
                 ]
 
                 for cog in COGS:

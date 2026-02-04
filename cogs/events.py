@@ -1,6 +1,4 @@
-import asyncio
 import time
-from pyexpat.errors import messages
 
 from discord.ext import commands
 import sqlite3
@@ -11,7 +9,7 @@ from cogs.setupticket import TicketCreateView
 from dotenv import load_dotenv
 load_dotenv()
 
-from cogs.setupdatabase import DB_PATH
+from utils.setupdatabase import DB_PATH
 
 class Events(commands.Cog):
     def __init__(self, bot):
