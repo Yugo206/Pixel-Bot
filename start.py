@@ -133,7 +133,8 @@ try:
                     "cogs.visite",
                     "cogs.setupticket",
                     "cogs.partenariat",
-                    "cogs.warn"
+                    "cogs.warn",
+                    "setup_database"
                 ]
 
                 for cog in COGS:
