@@ -38,7 +38,7 @@ class Trade(commands.Cog):
         embed.add_field(name="Argent par seconde", value=argent, inline=False)
         embed.add_field(name="Note", value=note or "Aucune note", inline=False)
 
-        channel = interaction.guild.get_channel(os.getenv("CHANNEL_TRADE_ID"))  # remplace par ton channel
+        channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_TRADE_ID"))) # remplace par ton channel
         view = TradeView(interaction.user, None)
         annonce = await channel.send(f"Annonce de {interaction.user.mention} 🟢", embed=embed, view=view)
         view.annonce = annonce

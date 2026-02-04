@@ -26,9 +26,9 @@ class AvisModal(discord.ui.Modal, title="Ton avis"):
         self.message = message
 
     async def on_submit(self, interaction: discord.Interaction):
-        channel = self.bot.get_channel(os.getenv("CHANNEL_MODO_ID"))
+        channel = self.bot.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
         if channel is None:
-            channel = await self.bot.fetch_channel(os.getenv("CHANNEL_MODO_ID"))
+            channel = await self.bot.fetch_channel(int(os.getenv("CHANNEL_MODO_ID")))
 
         await channel.send(
             f"Avis de {interaction.user.mention} :\n{self.avis.value}"
@@ -64,7 +64,7 @@ class AvisView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
         advisor = None
         try:
-            advisor = self.bot.get_channel(os.getenv("CHANNEL_MODO_ID"))
+            advisor = self.bot.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
         except Exception as e:
             print(e)
         if advisor is None:
@@ -235,7 +235,7 @@ class SatisfactionView(discord.ui.View):
 
     async def _apply_sanctions(self, interaction: discord.Interaction, warn_count: int):
         """Applique les sanctions selon le nombre de warns."""
-        channel = interaction.guild.get_channel(os.getenv("CHANNEL_MODO_ID"))
+        channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
 
         if warn_count == 3:
             await self._apply_timeout(interaction, channel, hours=48, reason="3 avertissements")
@@ -331,7 +331,7 @@ class FermerView(discord.ui.View):
 
     @discord.ui.button(label="Fermer le ticket", style=discord.ButtonStyle.red, custom_id="ticket:close")
     async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
-        role = discord.utils.get(interaction.user.roles, id=os.getenv("ROLE_MODO_ID"))
+        role = discord.utils.get(interaction.user.roles, id=int(os.getenv("ROLE_MODO_ID")))
         if role:
             await interaction.response.send_message("Comment s'est passé votre ticket ?", view=SatisfactionView(self.membre), ephemeral=True)
         else:
@@ -397,7 +397,7 @@ class TicketCreateView(discord.ui.View):
         message = await thread.send(embed=embed, view=view)
         await interaction.response.send_message(f"Ticket crée avec succès dans {thread.mention}", ephemeral=True)
         try:
-            channel = interaction.guild.get_channel(os.getenv("CHANNEL_MODO_ID"))
+            channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
         except discord.Forbidden as ee:
             print(ee)
         if channel is None:

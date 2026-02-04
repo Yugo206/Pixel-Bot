@@ -90,7 +90,7 @@ class Events(commands.Cog):
 
         # Level up
         if level_apres > level_avant:
-            channel = message.guild.get_channel(os.getenv("CHANNEL_COMMANDE_ID"))
+            channel = message.guild.get_channel(int(os.getenv("CHANNEL_COMMANDE_ID")))
             if channel:
                 await channel.send(
                     f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"

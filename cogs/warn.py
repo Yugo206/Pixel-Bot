@@ -184,7 +184,7 @@ class Warn(commands.Cog):
         if not bans:
             return
 
-        guild = self.bot.get_guild(os.getenv("GUILD_ID"))
+        guild = self.bot.get_guild(int(os.getenv("GUILD_ID")))
         if not guild:
             return
 
@@ -314,7 +314,7 @@ class Warn(commands.Cog):
                     elif warn_count == 5:
                         duration = 0.001
                         until = utcnow() + timedelta(days=7)
-                        channel = interaction.guild.get_channel(os.getenv("CHANNEL_MODO_ID"))
+                        channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
 
                         try:
                             await membre.timeout(until, reason="5 avertissements")
@@ -351,7 +351,7 @@ class Warn(commands.Cog):
                         except discord.Forbidden:
                             print(f"Impossible de ban {membre.name}")
 
-                        channel = interaction.guild.get_channel(os.getenv("CHANNEL_MODO_ID"))
+                        channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
                         unban_at = int(time.time()) + duration * 86400
 
                         await interaction.guild.ban(membre, reason="10 avertissements")
