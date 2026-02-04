@@ -5,6 +5,9 @@ from PIL import Image, ImageDraw, ImageFont
 import io
 import sqlite3
 import os
+from dotenv import load_dotenv
+load_dotenv()
+
 
 from cogs.setupdatabase import DB_PATH
 

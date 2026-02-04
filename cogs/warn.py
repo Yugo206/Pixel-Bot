@@ -5,6 +5,8 @@ import sqlite3
 import os
 from datetime import datetime, timedelta, timezone
 import time
+from dotenv import load_dotenv
+load_dotenv()
 from discord.utils import utcnow
 from cogs.setupdatabase import DB_PATH
 class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
@@ -133,7 +135,7 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
         self.warn = warn
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message("Merci, tu recevera une réponse dans les prochaines 24h")
-        channel = self.bot.get_channel(1405117622063857805)
+        channel = self.bot.get_channel(os.getenv("CHANNEL_MODO_ID"))
         embed = discord.Embed(title="Contestation", color=discord.Color.green(), description="Nouvelle contestation !")
         embed.add_field(name="Membre :", value=interaction.user.mention, inline=False)
         embed.add_field(name="Raison : ", value= self.raison.value, inline=False)
@@ -182,7 +184,7 @@ class Warn(commands.Cog):
         if not bans:
             return
 
-        guild = self.bot.get_guild(1405117064909291600)
+        guild = self.bot.get_guild(os.getenv("GUILD_ID"))
         if not guild:
             return
 
@@ -287,7 +289,7 @@ class Warn(commands.Cog):
                     if warn_count == 3:
                         duration = 172800
                         until = utcnow() + timedelta(hours=48)
-                        channel = interaction.guild.get_channel(1405119711624171645)
+                        channel = interaction.guild.get_channel(os.getenv("CHANNEL_MODO_ID"))
 
                         try:
                             await membre.timeout(until, reason="3 avertissements")
@@ -312,7 +314,7 @@ class Warn(commands.Cog):
                     elif warn_count == 5:
                         duration = 0.001
                         until = utcnow() + timedelta(days=7)
-                        channel = interaction.guild.get_channel(1405119711624171645)
+                        channel = interaction.guild.get_channel(os.getenv("CHANNEL_MODO_ID"))
 
                         try:
                             await membre.timeout(until, reason="5 avertissements")
@@ -349,7 +351,7 @@ class Warn(commands.Cog):
                         except discord.Forbidden:
                             print(f"Impossible de ban {membre.name}")
 
-                        channel = interaction.guild.get_channel(1405119711624171645)
+                        channel = interaction.guild.get_channel(os.getenv("CHANNEL_MODO_ID"))
                         unban_at = int(time.time()) + duration * 86400
 
                         await interaction.guild.ban(membre, reason="10 avertissements")

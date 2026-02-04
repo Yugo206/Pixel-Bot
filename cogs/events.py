@@ -8,6 +8,8 @@ import random
 import os
 import discord
 from cogs.setupticket import TicketCreateView
+from dotenv import load_dotenv
+load_dotenv()
 
 from cogs.setupdatabase import DB_PATH
 
@@ -88,7 +90,7 @@ class Events(commands.Cog):
 
         # Level up
         if level_apres > level_avant:
-            channel = message.guild.get_channel(1405119711624171645)
+            channel = message.guild.get_channel(os.getenv("CHANNEL_COMMANDE_ID"))
             if channel:
                 await channel.send(
                     f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
@@ -132,33 +134,6 @@ class Events(commands.Cog):
             await member.send(embed=embed, view=view)
         except discord.Forbidden:
             pass
-
-    @commands.Cog.listener()
-    async def on_guild_channel_create(self, channel):
-        if not isinstance(channel, discord.TextChannel):
-            return
-
-        try:
-            msg = await self.bot.wait_for(
-                "message",
-                timeout=15.0,
-                check=lambda m: m.channel == channel
-            )
-
-            if msg.embeds:
-                text = (msg.embeds[0].title or "") + " " + (msg.embeds[0].description or "")
-                if "partenariat" in text.lower():
-                    from cogs.partenariat import Partenariat_commencerView
-
-                    user = msg.mentions[0]
-                    embed = discord.Embed(
-                        title="Bienvenue dans le système automatique de partenariat !",
-                        description="Cliquez pour commencer.",
-                        color=discord.Color.green()
-                    )
-                    view = Partenariat_commencerView(user, channel)
-                    await channel.send(embed=embed, view=view)
-
         except:
             pass
 

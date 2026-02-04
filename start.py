@@ -9,12 +9,14 @@ from dotenv import load_dotenv
 load_dotenv()
 from cogs.tickets import TicketCreateView
 from cogs.setupdatabase import DB_PATH
+from dotenv import load_dotenv
+load_dotenv()
 from os import getenv
 from discord.ext.commands import command
 try:
     # Chargement config
     try:
-        Token = os.getenv("PIXEL_TOKEN")
+        Token = os.getenv("DISCORD_TOKEN")
         print(Token)
     except Exception as e:
         print(e)
@@ -132,9 +134,8 @@ try:
                     "cogs.trade",
                     "cogs.visite",
                     "cogs.setupticket",
-                    "cogs.partenariat",
                     "cogs.warn",
-                    "setup_database"
+                    "cogs.setupdatabase"
                 ]
 
                 for cog in COGS:

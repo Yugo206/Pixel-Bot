@@ -4,6 +4,9 @@ from discord.ext import commands
 from discord import app_commands
 import json
 from datetime import datetime
+from dotenv import load_dotenv
+load_dotenv()
+
 
 class VisiteGuidee(discord.ui.View):
     def __init__(self, etape=1):

@@ -2,6 +2,9 @@ import asyncio
 import discord
 from discord.ext import commands
 from cogs.tickets import TicketCreateView
+from dotenv import load_dotenv
+load_dotenv()
+
 
 try:
 

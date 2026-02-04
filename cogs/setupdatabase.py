@@ -2,7 +2,15 @@ import discord
 import sqlite3
 from discord.ext import commands
 import os
-DB_PATH = os.path.join(os.path.dirname(__file__), 'tickets.db')
+from dotenv import load_dotenv
+load_dotenv()
+DB_PATH = os.getenv("CHEMIN_DB")
+if DB_PATH is None:
+    raise RuntimeError("CHEMIN_DB non défini")
+
+if not os.path.exists(DB_PATH):
+    print("Database not found")
+print("DB = ", DB_PATH)
 
 
 class SetupDatabaseCog(commands.Cog):
@@ -73,6 +81,7 @@ class SetupDatabaseCog(commands.Cog):
                 "created_at_iso"	TEXT,
                 PRIMARY KEY("id" AUTOINCREMENT));""")
                 db.commit()
+
 
 
 async def setup(bot):
