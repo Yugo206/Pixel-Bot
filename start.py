@@ -30,98 +30,76 @@ try:
 
     bot = commands.Bot(command_prefix="!", intents=intents)
 
-    @tasks.loop(seconds=30)
-    async def ticket_watcher(bot):
+
+    @tasks.loop(seconds=120)
+    async def ticket_watcher():
         await bot.wait_until_ready()
 
-        while not bot.is_closed():
-            now = time.time()
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
+        now = time.time()
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.cursor()
 
-            cur.execute("""
-            SELECT thread_id, last_message, warn_12h, closed_at, statut
-            FROM ticket
-            """)
-            tickets = cur.fetchall()
+        cur.execute("""
+        SELECT thread_id, last_message, warn_12h, closed_at, statut
+        FROM ticket
+        """)
+        tickets = cur.fetchall()
 
-            for thread_id, last_msg, warn_12h, closed_at, statut in tickets:
-                thread = bot.get_channel(thread_id)
-                if not thread:
-                    continue
-                if last_msg == None:
-                    continue
-                inactivity = now - last_msg
+        for thread_id, last_msg, warn_12h, closed_at, statut in tickets:
+            thread = bot.get_channel(thread_id)
+            if not thread or last_msg is None:
+                continue
 
-                # ⚠️ 12h WARNING
-                if statut == 2 and inactivity > 24 * 3600 and not warn_12h:
-                    await thread.send("⚠️ Ticket inactif depuis 12h.")
-                    cur.execute(
-                        "UPDATE ticket SET warn_12h = 1 WHERE thread_id = ?",
-                        (thread_id,)
-                    )
+            inactivity = now - last_msg
 
-                # 🔒 24h FERMETURE
-                if statut == 2 and inactivity > 24 * 3600:
-                    await thread.send("🔒 Ticket fermé pour inactivité.")
-                    await thread.edit(archived=True, locked=True)
+            if statut == 2 and inactivity > 12 * 3600 and not warn_12h:
+                await thread.send("⚠️ Ticket inactif depuis 12h.")
+                cur.execute(
+                    "UPDATE ticket SET warn_12h = 1 WHERE thread_id = ?",
+                    (thread_id,)
+                )
 
-                    cur.execute("""
-                    UPDATE ticket
-                    SET statut = 3, closed_at = ?
-                    WHERE thread_id = ?
-                    """, (now, thread_id))
+            if statut == 2 and inactivity > 24 * 3600:
+                await thread.send("🔒 Ticket fermé pour inactivité.")
+                await thread.edit(archived=True, locked=True)
+                cur.execute("""
+                UPDATE ticket SET statut = 3, closed_at = ?
+                WHERE thread_id = ?
+                """, (now, thread_id))
 
-                # 🗑️ 24h APRÈS FERMETURE → SUPPRESSION
-                if statut == 3 and closed_at and now - closed_at > 24 * 3600:
-                    await thread.delete()
-                    cur.execute(
-                        "DELETE FROM ticket WHERE thread_id = ?",
-                        (thread_id,)
-                    )
+            if statut == 3 and closed_at and now - closed_at > 24 * 3600:
+                await thread.delete()
+                cur.execute(
+                    "DELETE FROM ticket WHERE thread_id = ?",
+                    (thread_id,)
+                )
 
-            conn.commit()
-            conn.close()
-            await asyncio.sleep(120)  # toutes les 5 minutes
-        @cycle_status.before_loop
-        async def before_ticket_watcher():
-            await bot.wait_until_ready()
+        conn.commit()
+        conn.close()
 
 
-    @tasks.loop(seconds=30)
+    @tasks.loop(seconds=10)
     async def cycle_status():
-        await bot.change_presence(activity=discord.Game("Anime Pixel Party"))
-        await asyncio.sleep(10)
+        activities = [
+            discord.Game("Anime Pixel Party"),
+            discord.Activity(type=discord.ActivityType.watching, name="La version 1.1.2"),
+            discord.Activity(type=discord.ActivityType.listening, name="Les membres de Pixel Party"),
+        ]
 
-        await bot.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="La version 1.1.2"
-            )
-        )
-        await asyncio.sleep(10)
-
-        await bot.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.listening,
-                name="Les membres de Pixel Party"
-            )
-        )
-
-
-    @cycle_status.before_loop
-    async def before_cycle_status():
-        await bot.wait_until_ready()
+        activity = activities[cycle_status.current_loop % len(activities)]
+        await bot.change_presence(activity=activity)
 
 
     @bot.event
     async def on_ready():
-        print(f"Connecté en tant que {bot.user} (id: {bot.user.id})")
-        synced = await bot.tree.sync()
-        print(f"Commandes slash synchronisées : {len(synced)}")
+        print(f"Connecté en tant que {bot.user}")
+        await bot.tree.sync()
 
+        if not ticket_watcher.is_running():
+            ticket_watcher.start()
 
-
+        if not cycle_status.is_running():
+            cycle_status.start()
 
 
     async def setup_hook():
@@ -134,7 +112,8 @@ try:
                     "cogs.trade",
                     "cogs.visite",
                     "cogs.setupticket",
-                    "cogs.warn"
+                    "cogs.warn",
+                    "cogs.getdb"
                 ]
 
                 for cog in COGS:
