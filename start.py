@@ -47,32 +47,39 @@ try:
 
         for thread_id, last_msg, warn_12h, closed_at, statut in tickets:
             thread = bot.get_channel(thread_id)
-            if not thread or last_msg is None:
+            if not thread:
+                continue
+
+            # ⛔ TICKET FERMÉ → ON NE TOUCHE PLUS
+            if statut == 3:
+                if closed_at and now - closed_at > 24 * 3600:
+                    await thread.delete()
+                    cur.execute(
+                        "DELETE FROM ticket WHERE thread_id = ?",
+                        (thread_id,)
+                    )
+                continue
+
+            if last_msg is None:
                 continue
 
             inactivity = now - last_msg
 
-            if statut == 2 and inactivity > 12 * 3600 and not warn_12h:
+            if inactivity > 12 * 3600 and not warn_12h:
                 await thread.send("⚠️ Ticket inactif depuis 12h.")
                 cur.execute(
                     "UPDATE ticket SET warn_12h = 1 WHERE thread_id = ?",
                     (thread_id,)
                 )
 
-            if statut == 2 and inactivity > 24 * 3600:
+            if inactivity > 24 * 3600:
                 await thread.send("🔒 Ticket fermé pour inactivité.")
                 await thread.edit(archived=True, locked=True)
                 cur.execute("""
-                UPDATE ticket SET statut = 3, closed_at = ?
+                UPDATE ticket
+                SET statut = 3, closed_at = ?
                 WHERE thread_id = ?
                 """, (now, thread_id))
-
-            if statut == 3 and closed_at and now - closed_at > 24 * 3600:
-                await thread.delete()
-                cur.execute(
-                    "DELETE FROM ticket WHERE thread_id = ?",
-                    (thread_id,)
-                )
 
         conn.commit()
         conn.close()

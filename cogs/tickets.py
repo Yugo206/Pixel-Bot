@@ -351,7 +351,7 @@ class FermerView(discord.ui.View):
         try:
             with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
                 c = conn.cursor()
-                c.execute("UPDATE ticket SET statut = 3 WHERE membre_id = ?", (interaction.user.id,))
+                c.execute("UPDATE ticket SET statut = 3 WHERE membre_id = ?", (self.membre.id,))
                 conn.commit()
         except sqlite3.OperationalError as e:
             print(e)
