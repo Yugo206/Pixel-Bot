@@ -581,15 +581,6 @@ class MentionPartenariatView(discord.ui.View):
 class Tickets(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.bot.add_view(TicketCreateView(self.bot))
-        self.bot.add_view(FermerView(None, None))
-        self.bot.add_view(ModoView(None, None, None, None))
-        self.bot.add_view(AvisView(self.bot))
-        self.bot.add_view(PartenariatCommencerView(self.bot))
-        self.bot.add_view(ConditionsPartenariatView(self.bot))
-        self.bot.add_view(MentionPartenariatView(self.bot))
-        self.bot.add_view(SatisfactionView(None))
-
 
 async def setup(bot):
     await bot.add_cog(Tickets(bot))

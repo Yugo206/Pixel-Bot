@@ -6,6 +6,9 @@ import random
 import os
 import discord
 from cogs.setupticket import TicketCreateView
+from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView
+
+
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -30,8 +33,14 @@ class Events(commands.Cog):
     async def on_ready(self):
         print("Bot démarré")
         try:
-
             self.bot.add_view(TicketCreateView(self.bot))
+            self.bot.add_view(FermerView(None))
+            self.bot.add_view(ModoView())
+            self.bot.add_view(AvisView(self.bot))
+            self.bot.add_view(PartenariatCommencerView(self.bot))
+            self.bot.add_view(ConditionsPartenariatView(self.bot))
+            self.bot.add_view(MentionPartenariatView(self.bot))
+            self.bot.add_view(SatisfactionView())
         except Exception as e:
             print(e)
 
