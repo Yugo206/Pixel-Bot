@@ -34,13 +34,13 @@ class Events(commands.Cog):
         print("Bot démarré")
         try:
             self.bot.add_view(TicketCreateView(self.bot))
-            self.bot.add_view(FermerView(None))
+            self.bot.add_view(FermerView(None, None))
             self.bot.add_view(ModoView())
             self.bot.add_view(AvisView(self.bot))
             self.bot.add_view(PartenariatCommencerView(self.bot))
             self.bot.add_view(ConditionsPartenariatView(self.bot))
             self.bot.add_view(MentionPartenariatView(self.bot))
-            self.bot.add_view(SatisfactionView())
+            self.bot.add_view(SatisfactionView(None))
         except Exception as e:
             print(e)
 
@@ -140,8 +140,6 @@ class Events(commands.Cog):
         try:
             await member.send(embed=embed, view=view)
         except discord.Forbidden:
-            pass
-        except:
             pass
 
 
