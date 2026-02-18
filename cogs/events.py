@@ -1,11 +1,11 @@
 import time
-
 from discord.ext import commands
 import sqlite3
 import random
 import os
 import discord
 from cogs.setupticket import TicketCreateView
+from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -30,24 +30,54 @@ class Events(commands.Cog):
     async def on_ready(self):
         print("Bot démarré")
         try:
-
             self.bot.add_view(TicketCreateView(self.bot))
+            self.bot.add_view(FermerView())
+            self.bot.add_view(ModoView())
+            self.bot.add_view(AvisView(self.bot))
+            self.bot.add_view(PartenariatCommencerView(self.bot))
+            self.bot.add_view(ConditionsPartenariatView(self.bot))
+            self.bot.add_view(MentionPartenariatView(self.bot))
+            self.bot.add_view(SatisfactionView())
         except Exception as e:
             print(e)
 
 
-
+    @commands.Cog.listener()
+    async def on_member_remove(self, member):
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                DELETE FROM utilisateurs WHERE user_id = ?
+                """, (member.id,))
+                conn.commit()
+        except sqlite3.OperationalError as e:
+            guild = member.guild
+            channel = guild.get_channel(int(os.getenv("CHANNEL_COMMANDER_ID")))
+            await channel.send(f"Erreur de base de donnée quand **{member.id}** as quitté le serveur : {e}")
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
             return
 
         if message.channel.type == discord.ChannelType.private_thread:
-            conn = sqlite3.connect(DB_PATH)
-            cur = conn.cursor()
-            cur.execute("UPDATE ticket SET last_message = ? WHERE thread_id = ?", (time.time(), message.channel.id))
-            conn.commit()
-            conn.close()
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                cur.execute("""SELECT membre_id FROM ticket WHERE thread_id = ?""", (message.channel.id,))
+                rppw = cur.fetchone()
+                if message.author.id == rppw[0]:
+                    cur.execute("UPDATE ticket SET last_message = ? WHERE thread_id = ?", (time.time(), message.channel.id))
+                    conn.commit()
+                    cur.execute("SELECT warn_12h FROM ticket WHERE thread_id = ?", (message.channel.id,))
+                    row = cur.fetchone()
+                    if row[0] is None:
+                        return
+                    elif row[0] is not None:
+                        cur.execute("UPDATE ticket SET warn_12h = NULL WHERE thread_id = ?", (message.channel.id,))
+                        conn.commit()
+
+
+
 
         print("MESSAGE DETECTEE")
         print("DB path :", os.path.abspath(DB_PATH))
@@ -131,8 +161,6 @@ class Events(commands.Cog):
         try:
             await member.send(embed=embed, view=view)
         except discord.Forbidden:
-            pass
-        except:
             pass
 
 

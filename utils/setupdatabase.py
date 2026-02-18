@@ -61,7 +61,8 @@ TABLES = {
         "raison INTEGER NOT NULL",
         "last_message INTEGER",
         "warn_12h INTEGER",
-        "closed_at INTEGER"
+        "closed_at INTEGER",
+        "modo_message_id INTEGER"
     ],
 
     "warns": [
