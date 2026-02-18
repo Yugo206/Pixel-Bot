@@ -109,7 +109,7 @@ class ModoView(discord.ui.View):
             result = c.fetchone()
         thread_id = result[0]
         membre_id = result[1]
-        if thread_id or membre_id == None:
+        if thread_id is None or membre_id is None:
             interaction.response.send_message("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme")
             return
         bot = interaction.client
@@ -152,7 +152,7 @@ class SatisfactionView(discord.ui.View):
         selected_value = select.values[0]
         with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
             c = conn.cursor()
-            conn.execute("""SELECT membre_id FROM ticket WHERE thread_id = ?""",
+            c.execute("""SELECT membre_id FROM ticket WHERE thread_id = ?""",
                       (interaction.channel.id,))
             rpw = c.fetchone()
         bot = interaction.client
@@ -408,7 +408,7 @@ class TicketCreateView(discord.ui.View):
         print("line 30")
         raison = select.values[0]
         print(raison)
-        view = FermerView(raison, interaction.user)
+        view = FermerView()
         embed = discord.Embed(title="Gestionnaire de ticket", description=f"Bienvenue {interaction.user.name} sur ton ticket !", colour=discord.Colour.blue())
         embed.add_field(name="Fermer le ticket", value="Tu peut fermer ton ticket à tout moment en cliquant sur ce boutton", inline=False)
         embed.add_field(name="Raison du ticket : ", value=raison)
@@ -431,7 +431,7 @@ class TicketCreateView(discord.ui.View):
         except Exception as eee:
             print(eee)
         messsages = await channel.send(embed=embed2, view=view2)
-        await interaction.message.edit(content="Ouvrir un ticket", view=TicketCreateView(self.bot))
+        await interaction.message.edit(view=TicketCreateView(self.bot))
         print("line 207")
         try:
             with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
