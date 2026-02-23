@@ -10,7 +10,7 @@ class Accepterview(discord.ui.View):
     def __init__(self):
         super().__init__()
 
-    @discord.ui.Button(label="Accepter", style=discord.ButtonStyle.green, emoji="✅")
+    @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, emoji="✅")
     async def accepter(self, interaction: discord.Interaction):
         membre = None
         await interaction.response.send_message(f"La candidature de {membre.mention} viens d'être accepté ✅ \n Un entretien vocal prevu avec ")
@@ -49,12 +49,13 @@ class CommencerView(discord.ui.View):
 
     @discord.ui.button(label="Commencer", style=discord.Colour.green())
     async def commencer(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
         embed = discord.Embed(title="Sélection du rôle", description=f"Bienvenue {interaction.user.name}! Selectionne le rôle staff que tu souhaites.", colour=discord.Colour.blue())
         try:
             await interaction.user.send(embed=embed, view=RoleSelectView())
-            await interaction.response.send_message("Regarde tes messages privés!", ephemeral=True)
+            await interaction.followup.send("Regarde tes messages privés!", ephemeral=True)
         except discord.Forbidden:
-            await interaction.response.send_message("Tu n'a pas activé les messages privés ! Active-les, c'est **obligatoire** !", ephemeral=True)
+            await interaction.followup.send("Tu n'a pas activé les messages privés ! Active-les, c'est **obligatoire** pour devenir staff !", ephemeral=True)
 
 class RoleSelectView(discord.ui.View):
     def __init__(self):
@@ -186,7 +187,9 @@ class RecrutementCog(commands.Cog):
         self.bot = bot
     @commands.command(name="setup-recrutement")
     async def setup_recrutement(self, ctx):
+        print("190:17")
         await ctx.message.delete()
+        print("192:16")
         embed = discord.Embed(title="Recrutement",
                               color=discord.Color.green(),
                               description="Regarde ci-dessous les options de recrutement et si l'une d'entre elles t'interesse, clique sur le menu ci-dessous et découvre les details du rôle.")
@@ -199,7 +202,8 @@ class RecrutementCog(commands.Cog):
         embed.add_field(name="Parrain",
                         value="Ton rôle : Mettre notre publicité sur d'autres serveurs pour faire grandir le serveur.",
                         inline=False)
-        await ctx.send(embed=embed, view=ConditionsSelect())
+        print("205:16")
+        await ctx.channel.send(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(RecrutementCog(bot))
