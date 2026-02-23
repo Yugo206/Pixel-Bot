@@ -19,7 +19,6 @@ class Profile(commands.Cog):
             xp -= xp_needed
             xp_needed *= 2
             level += 1
-
         return level
 
     @app_commands.command(name="profil", description="Afficher ton profil")
@@ -42,5 +41,4 @@ class Profile(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Profile(bot))
-    print()
 

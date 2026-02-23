@@ -9,7 +9,6 @@ load_dotenv()
 from datetime import datetime, timedelta, timezone
 from cogs.warn import ContestationView
 from utils.setupdatabase import DB_PATH
-print("DB ABS PATH:", os.path.abspath(DB_PATH))
 
 class AvisModal(discord.ui.Modal, title="Ton avis"):
     avis = discord.ui.TextInput(
@@ -46,9 +45,8 @@ class AvisModal(discord.ui.Modal, title="Ton avis"):
 
 
 class AvisView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.bot = bot
 
     @discord.ui.select(
         placeholder="Comment as-tu trouvé le staff ?",
@@ -62,9 +60,10 @@ class AvisView(discord.ui.View):
         ]
     )
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        bot = interaction.client
         advisor = None
         try:
-            advisor = self.bot.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
+            advisor = bot.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
         except Exception as e:
             print(e)
         if advisor is None:
@@ -86,7 +85,7 @@ class AvisView(discord.ui.View):
     )
     async def explique(self, interaction: discord.Interaction, button: discord.ui.Button):
         modal = AvisModal(
-            bot=self.bot,
+            bot=bot,
             view=self,
             message=interaction.message
         )
@@ -380,10 +379,9 @@ class FermerView(discord.ui.View):
 
 
 class TicketCreateView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
         print("line 13")
-        self.bot = bot
 
     @discord.ui.select(placeholder="Selectionne une option", custom_id="ticket:create", options=[
         discord.SelectOption(label="Partenariat", description="Pour proposer ou discuter d'un partenariat entre serveur/projet", emoji="🤝"),
@@ -397,6 +395,7 @@ class TicketCreateView(discord.ui.View):
         discord.SelectOption(label="Autre / privé", description="pour toute autre demande nécessitant une discussion en privé avec le staff", emoji="🔒"),
     ])
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        bot = interaction.client
         print("line 23")
         thread = await interaction.channel.create_thread(
             name=f"ticket-{interaction.user.name}",
@@ -420,7 +419,7 @@ class TicketCreateView(discord.ui.View):
         try:
             channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
         except discord.Forbidden as ee:
-            print(ee)
+            interaction.followup.send("une erreur viens de se produire. Contactez **advisorypear2982** et lui transmettre ce code d'erreur : TIK:420:13.")
         if channel is None:
             print("PAS  DE CHANNEL TROUVé !!!!!!!")
         elif channel is not None:
@@ -431,7 +430,7 @@ class TicketCreateView(discord.ui.View):
         except Exception as eee:
             print(eee)
         messsages = await channel.send(embed=embed2, view=view2)
-        await interaction.message.edit(view=TicketCreateView(self.bot))
+        await interaction.message.edit(view=TicketCreateView(bot))
         print("line 207")
         try:
             with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
@@ -455,15 +454,15 @@ class TicketCreateView(discord.ui.View):
             embed5666666.add_field(name="Etape 3 : Ta pub", value="Tu donne la publicité de ton serveur avec le lien. Si tu n'a pas de pub, envoie juste le lien.", inline=False)
             embed5666666.add_field(name="Etape 5 : Notre pub & finalistion", value="Le bot envoie la pu du serveur. Le staff viendra ensuite pour publier les annonces.", inline=False)
             embed5666666.add_field(name="Alors, pret a commencer ?", value=" Clique sur le boutton \"Demarrer\" ci-dessous")
-            await thread.send(embed=embed5666666, view=PartenariatCommencerView(self.bot))
+            await thread.send(embed=embed5666666, view=PartenariatCommencerView(bot))
 
 class PartenariatCommencerView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.bot = bot
 
     @discord.ui.button(label="Demarrer", style=discord.ButtonStyle.green, custom_id="Partenariat:Commencer")
     async def demarrer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        bot = interaction.client
         embed = discord.Embed(
             title="🤝 Conditions de partenariat",
             description=(
@@ -517,18 +516,18 @@ class PartenariatCommencerView(discord.ui.View):
             inline=False
         )
         embed.set_footer(text="En faisant un partenariat, tu t'engage a respecter ces règles")
-        view = ConditionsPartenariatView(self.bot)
+        view = ConditionsPartenariatView(bot)
         await interaction.response.send_message(embed=embed, view=view)
         button.disabled = True
         await interaction.message.edit(view=self)
 
 class ConditionsPartenariatView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.bot = bot
 
     @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="partenariat:accepter")
     async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        bot = interaction.client
         thread = interaction.channel
 
         await interaction.response.send_message(
@@ -559,7 +558,7 @@ class ConditionsPartenariatView(discord.ui.View):
         )
 
         try:
-            pub_msg = await self.bot.wait_for("message", timeout=240, check=check)
+            pub_msg = await bot.wait_for("message", timeout=240, check=check)
         except asyncio.TimeoutError:
             await thread.send("⏱️ Pas de pub reçue.")
 
@@ -569,14 +568,13 @@ class ConditionsPartenariatView(discord.ui.View):
                 description="Choisis la mention souhaitée",
                 colour=discord.Colour.blurple()
             ),
-            view=MentionPartenariatView(self.bot)
+            view=MentionPartenariatView(bot)
         )
 
 
 class MentionPartenariatView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.bot = bot
 
     @discord.ui.select(options=[
         discord.SelectOption(label="Aucune mention", description="Aucune mention sur ton serveur", emoji="🚫"),
@@ -585,6 +583,7 @@ class MentionPartenariatView(discord.ui.View):
         discord.SelectOption(label="Mention \"Everyone\"", description="Mention everyone sur ton serveur", emoji="🧑‍🧑‍🧒‍🧒")
     ], custom_id="partenariat:mention")
     async def select_callback(self, interaction: discord.Interaction, select : discord.ui.Select):
+        bot = interaction.client
         mention = select.values[0]
         channel = interaction.message.channel
         await interaction.response.send_message(f"Mention choisi : {mention}")

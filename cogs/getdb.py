@@ -60,6 +60,7 @@ class DatabaseCog(commands.Cog):
     # 👀 VOIR
     # ======================
     @app_commands.command(name="db_view", description="Voir des données avancées de la DB")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.autocomplete(
         table=table_autocomplete,
         column_info=column_autocomplete,
@@ -162,6 +163,7 @@ class DatabaseCog(commands.Cog):
         ]
 
     @app_commands.command(name="db_edit", description="Modifier la base de données")
+    @app_commands.checks.has_permissions(administrator=True)
     @app_commands.autocomplete(
         table=table_autocomplete,
         column_set=column_autocomplete,

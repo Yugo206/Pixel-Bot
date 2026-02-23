@@ -8,6 +8,7 @@ from cogs.setupticket import TicketCreateView
 from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView
 from dotenv import load_dotenv
 load_dotenv()
+from cogs.recrutement import ConditionsSelect, RoleSelectView
 
 from utils.setupdatabase import DB_PATH
 
@@ -30,18 +31,45 @@ class Events(commands.Cog):
     async def on_ready(self):
         print("Bot démarré")
         try:
-            self.bot.add_view(TicketCreateView(self.bot))
+            self.bot.add_view(TicketCreateView())
             self.bot.add_view(FermerView())
             self.bot.add_view(ModoView())
-            self.bot.add_view(AvisView(self.bot))
-            self.bot.add_view(PartenariatCommencerView(self.bot))
-            self.bot.add_view(ConditionsPartenariatView(self.bot))
-            self.bot.add_view(MentionPartenariatView(self.bot))
+            self.bot.add_view(AvisView())
+            self.bot.add_view(PartenariatCommencerView())
+            self.bot.add_view(ConditionsPartenariatView())
+            self.bot.add_view(MentionPartenariatView())
             self.bot.add_view(SatisfactionView())
+            self.bot.add_view(ConditionsSelect())
+            self.bot.add_view(RoleSelectView())
         except Exception as e:
             print(e)
 
-
+    @commands.Cog.listener()
+    async def on_member_mention(self, member):
+        responses = [
+            "Salut, moi c'est Pixel Bot!",
+            "Quelqu’un m’a mentionné ici ?",
+            "Pixel Bot, toujours prêt à vous répondre !",
+            "Hello ! Je suis Pixel Bot.",
+            "Salut ! Comment puis-je vous aider ?",
+            "Je suis Pixel Bot, votre bot Discord.",
+            "Mentionnez-moi quand vous voulez !",
+            "Pixel Bot est en ligne et prêt à répondre.",
+            "Salut ! Je suis Pixel Bot, votre assistant Discord.",
+            "Je suis là pour vous aider. Mentionnez-moi !",
+            "Pixel Bot a détecté une mention ! Comment puis-je vous aider ?",
+            "Salut, je suis Pixel Bot. Que puis-je faire pour vous?",
+            "Je suis Pixel Bot, votre bot Discord personnel.",
+            "Mentionnez-moi et je réponds !",
+            "Pixel Bot est actif. Dites-moi ce que vous voulez.",
+            "Salut ! Je suis Pixel Bot, prêt à répondre à vos questions.",
+            "Je suis Pixel Bot. Comment puis-je vous aider aujourd'hui ?",
+            "Pixel Bot a été mentionné ! Je suis prêt à répondre.",
+            "Salut, je suis Pixel Bot. Dites-moi ce dont vous avez besoin !",
+            "Pixel Bot est en ligne et prêt à vous aider. Mentionnez-moi !"
+        ]
+        response = random.choice(responses)
+        await member.send(response)
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         try:
@@ -132,8 +160,6 @@ class Events(commands.Cog):
 
         conn.commit()
         conn.close()
-
-        print(f"+{xp_gain} XP | +{argent_gain}€ pour {message.author}")
 
         # IMPORTANT pour les commandes
         await self.bot.process_commands(message)

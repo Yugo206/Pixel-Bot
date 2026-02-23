@@ -120,7 +120,8 @@ try:
                     "cogs.visite",
                     "cogs.setupticket",
                     "cogs.warn",
-                    "cogs.getdb"
+                    "cogs.getdb",
+                    "cogs.recrutement",
                 ]
 
                 for cog in COGS:

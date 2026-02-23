@@ -64,6 +64,12 @@ TABLES = {
         "closed_at INTEGER",
         "modo_message_id INTEGER"
     ],
+    "role_special": [
+        "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT",
+        "user_id INTEGER NOT NULL",
+        "role_id INTEGER NOT NULL",
+        "status INTEGER NOT NULL DEFAULT 0",
+    ],
 
     "warns": [
         "id INTEGER PRIMARY KEY AUTOINCREMENT",
