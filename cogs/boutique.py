@@ -11,7 +11,6 @@ from utils.setupdatabase import DB_PATH
 class BoutiqueCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        print("Line 9")
 
     class AchatSelect(discord.ui.Select):
         def __init__(self):
@@ -161,4 +160,3 @@ class BoutiqueCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(BoutiqueCog(bot))
-
