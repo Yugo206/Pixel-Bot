@@ -134,12 +134,13 @@ class ModoView(discord.ui.View):
         print(thread.name)
         message_ticket = await thread.fetch_message(message_ticket_id)
         print(message_ticket.content)
-        await interaction.followup.send(f"Tu a pris le ticket. Le lien est ici : {thread.mention}.")
+        await interaction.followup.send(f"Tu a pris le ticket. Le lien est ici : {thread.mention}.", ephemeral=True)
         embed = message_ticket.embeds[0]
         embed.set_field_at(2, name="Modérateur : ", value=interaction.user.mention)
         embed.set_field_at(4, name="Statue", value="Actif")
         button.disabled = True
-        await interaction.message.edit(view=self, embed=embed)
+        await interaction.message.edit(view=self)
+        await message_ticket.edit(embed=embed)
         messs = await thread.send(f"{interaction.user.mention}")
         await messs.delete()
         try:
