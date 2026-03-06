@@ -104,36 +104,36 @@ class ModoView(discord.ui.View):
     @discord.ui.button(label="Prendre en chage", style=discord.ButtonStyle.blurple, custom_id="ticket:prendre")
     async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
-        with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
-            try:
-                c = conn.cursor()
-                c.execute("""SELECT thread_id, membre_id, message_ticket_id FROM ticket WHERE modo_message_id = ?""",
-                          (interaction.message.id,))
-                result = c.fetchone()
-            except sqlite3.OperationalError as e:
-                print(e)
-                await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme")
-                return
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
+                try:
+                    c = conn.cursor()
+                    c.execute("""SELECT thread_id, membre_id, message_ticket_id FROM ticket WHERE modo_message_id = ?""",
+                              (interaction.message.id,))
+                    result = c.fetchone()
+                except sqlite3.OperationalError as e:
+                    print(e)
+                    await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme", ephemeral=True)
+                    return
 
-        if result is None:
-            await interaction.followup.send("ERREUR DB : Aucun ticket trouvé")
+            if result is None:
+                await interaction.followup.send("ERREUR DB : Aucun ticket trouvé", ephemeral=True)
+                return
+        except sqlite3.OperationalError as e:
+            print(e)
+            await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme", ephemeral=True)
             return
 
         thread_id = result[0]
         membre_id = result[1]
         message_ticket_id = result[2]
-        print(message_ticket_id)
-        print(thread_id, membre_id)
         if thread_id is None or membre_id is None or message_ticket_id is None:
             await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme")
             return
         bot = interaction.client
         membre = await interaction.guild.fetch_member(membre_id)
-        print(membre.name)
         thread = await interaction.guild.fetch_channel(thread_id)
-        print(thread.name)
         message_ticket = await thread.fetch_message(message_ticket_id)
-        print(message_ticket.content)
         await interaction.followup.send(f"Tu a pris le ticket. Le lien est ici : {thread.mention}.", ephemeral=True)
         embed = message_ticket.embeds[0]
         embed.set_field_at(2, name="Modérateur : ", value=interaction.user.mention)
@@ -359,23 +359,27 @@ class FermerView(discord.ui.View):
 
     @discord.ui.button(label="Fermer le ticket", style=discord.ButtonStyle.red, custom_id="ticket:close")
     async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         thread = interaction.channel
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
-            conn.execute("""SELECT raison, membre_id FROM ticket WHERE thread_id = ?""",
-                      thread.id)
+            c.execute("""SELECT raison, membre_id FROM ticket WHERE thread_id = ?""",
+                      (thread.id,))
             content = c.fetchone()
-        if content is None:
-            await interaction.response.send_message("Probleme DB")
+            print(content)
+        if content is None or content[0] is None:
+            print("erreur 365:31")
+            await interaction.followup.send("Probleme DB")
         raison = content[0]
         membre_id = content[1]
         bot = interaction.client
-        membre = bot.get_user(membre_id)
+        membre = await bot.fetch_user(membre_id)
+        print(membre.name)
         role = discord.utils.get(interaction.user.roles, id=int(os.getenv("ROLE_MODO_ID")))
         if role:
-            await interaction.response.send_message("Comment s'est passé votre ticket ?", view=SatisfactionView(), ephemeral=True)
+            await interaction.followup.send("Comment s'est passé votre ticket ?", view=SatisfactionView(), ephemeral=True)
         else:
-            await interaction.response.send_message("Ticket fermé avec succès", ephemeral=True)
+            await interaction.followup.send("Ticket fermé avec succès", ephemeral=True)
         embed=discord.Embed(title="Ticket fermé", description="Ce ticket est fermé. Vous ne pouvez plus ecrire.")
         embed.add_field(name="Fermé par :", value=interaction.user.mention)
         embed.add_field(name="Raison ititiale du ticket : ", value=raison)
@@ -395,7 +399,6 @@ class FermerView(discord.ui.View):
                 conn.commit()
         except sqlite3.OperationalError as e:
             print(e)
-        print("line 68")
 
 
 class TicketCreateView(discord.ui.View):
@@ -617,4 +620,3 @@ class Tickets(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Tickets(bot))
-
