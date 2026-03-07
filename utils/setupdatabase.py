@@ -62,7 +62,8 @@ TABLES = {
         "last_message INTEGER",
         "warn_12h INTEGER",
         "closed_at INTEGER",
-        "modo_message_id INTEGER"
+        "modo_message_id INTEGER",
+        "message_ticket_id INTEGER"
     ],
     "role_special": [
         "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT",

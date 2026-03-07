@@ -39,8 +39,8 @@ class Events(commands.Cog):
             self.bot.add_view(ConditionsPartenariatView())
             self.bot.add_view(MentionPartenariatView())
             self.bot.add_view(SatisfactionView())
-            self.bot.add_view(ConditionsSelect())
-            self.bot.add_view(RoleSelectView())
+            self.bot.add_view(ConditionsPartenariatView())
+            # self.bot.add_view(RoleSelectView())
         except Exception as e:
             print(e)
 
@@ -103,12 +103,6 @@ class Events(commands.Cog):
                     elif row[0] is not None:
                         cur.execute("UPDATE ticket SET warn_12h = NULL WHERE thread_id = ?", (message.channel.id,))
                         conn.commit()
-
-
-
-
-        print("MESSAGE DETECTEE")
-        print("DB path :", os.path.abspath(DB_PATH))
 
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
