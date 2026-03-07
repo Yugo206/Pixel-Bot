@@ -30,14 +30,16 @@ class Events(commands.Cog):
     async def on_ready(self):
         print("Bot démarré")
         try:
-            self.bot.add_view(TicketCreateView(self.bot))
+            self.bot.add_view(TicketCreateView())
             self.bot.add_view(FermerView())
             self.bot.add_view(ModoView())
-            self.bot.add_view(AvisView(self.bot))
-            self.bot.add_view(PartenariatCommencerView(self.bot))
-            self.bot.add_view(ConditionsPartenariatView(self.bot))
-            self.bot.add_view(MentionPartenariatView(self.bot))
+            self.bot.add_view(AvisView())
+            self.bot.add_view(PartenariatCommencerView())
+            self.bot.add_view(ConditionsPartenariatView())
+            self.bot.add_view(MentionPartenariatView())
             self.bot.add_view(SatisfactionView())
+            self.bot.add_view(ConditionsPartenariatView())
+            # self.bot.add_view(RoleSelectView())
         except Exception as e:
             print(e)
 
@@ -75,12 +77,6 @@ class Events(commands.Cog):
                     elif row[0] is not None:
                         cur.execute("UPDATE ticket SET warn_12h = NULL WHERE thread_id = ?", (message.channel.id,))
                         conn.commit()
-
-
-
-
-        print("MESSAGE DETECTEE")
-        print("DB path :", os.path.abspath(DB_PATH))
 
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
@@ -132,8 +128,6 @@ class Events(commands.Cog):
 
         conn.commit()
         conn.close()
-
-        print(f"+{xp_gain} XP | +{argent_gain}€ pour {message.author}")
 
         # IMPORTANT pour les commandes
         await self.bot.process_commands(message)
