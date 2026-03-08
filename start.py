@@ -17,7 +17,6 @@ try:
     # Chargement config
     try:
         Token = os.getenv("DISCORD_TOKEN")
-        print(Token)
     except Exception as e:
         print(e)
     # main.py

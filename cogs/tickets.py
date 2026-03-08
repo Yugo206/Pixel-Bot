@@ -1,5 +1,6 @@
 import sqlite3
 import time
+from code import interact
 import discord
 from discord.ext import commands
 import os
@@ -9,7 +10,6 @@ load_dotenv()
 from datetime import datetime, timedelta, timezone
 from cogs.warn import ContestationView
 from utils.setupdatabase import DB_PATH
-print("DB ABS PATH:", os.path.abspath(DB_PATH))
 
 class AvisModal(discord.ui.Modal, title="Ton avis"):
     avis = discord.ui.TextInput(
@@ -46,9 +46,8 @@ class AvisModal(discord.ui.Modal, title="Ton avis"):
 
 
 class AvisView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.bot = bot
 
     @discord.ui.select(
         placeholder="Comment as-tu trouvé le staff ?",
@@ -62,9 +61,10 @@ class AvisView(discord.ui.View):
         ]
     )
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        bot = interaction.client
         advisor = None
         try:
-            advisor = self.bot.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
+            advisor = bot.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
         except Exception as e:
             print(e)
         if advisor is None:
@@ -85,8 +85,9 @@ class AvisView(discord.ui.View):
         custom_id="ticket:explique"
     )
     async def explique(self, interaction: discord.Interaction, button: discord.ui.Button):
+        bot = interaction.client
         modal = AvisModal(
-            bot=self.bot,
+            bot=bot,
             view=self,
             message=interaction.message
         )
@@ -102,26 +103,44 @@ class ModoView(discord.ui.View):
 
     @discord.ui.button(label="Prendre en chage", style=discord.ButtonStyle.blurple, custom_id="ticket:prendre")
     async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
-        with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
-            c = conn.cursor()
-            c.execute("""SELECT thread_id, membre_id FROM ticket WHERE message_modo_id = ?""",
-                      (interaction.message.id,))
-            result = c.fetchone()
+        await interaction.response.defer(ephemeral=True)
+        try:
+            with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
+                try:
+                    c = conn.cursor()
+                    c.execute("""SELECT thread_id, membre_id, message_ticket_id FROM ticket WHERE modo_message_id = ?""",
+                              (interaction.message.id,))
+                    result = c.fetchone()
+                except sqlite3.OperationalError as e:
+                    print(e)
+                    await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme", ephemeral=True)
+                    return
+
+            if result is None:
+                await interaction.followup.send("ERREUR DB : Aucun ticket trouvé", ephemeral=True)
+                return
+        except sqlite3.OperationalError as e:
+            print(e)
+            await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme", ephemeral=True)
+            return
+
         thread_id = result[0]
         membre_id = result[1]
-        if thread_id is None or membre_id is None:
-            interaction.response.send_message("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme")
+        message_ticket_id = result[2]
+        if thread_id is None or membre_id is None or message_ticket_id is None:
+            await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme")
             return
         bot = interaction.client
-        membre = bot.get_user(membre_id)
-        thread = bot.get_thread(thread_id)
-        await interaction.response.send_message(f"Tu a pris le ticket. Le lien est ici : {thread.mention}.", ephemeral=True)
-        await thread.edit(locked=False)
-        embed = interaction.message.embeds[0]
+        membre = await interaction.guild.fetch_member(membre_id)
+        thread = await interaction.guild.fetch_channel(thread_id)
+        message_ticket = await thread.fetch_message(message_ticket_id)
+        await interaction.followup.send(f"Tu a pris le ticket. Le lien est ici : {thread.mention}.", ephemeral=True)
+        embed = message_ticket.embeds[0]
         embed.set_field_at(2, name="Modérateur : ", value=interaction.user.mention)
         embed.set_field_at(4, name="Statue", value="Actif")
         button.disabled = True
-        await interaction.message.edit(view=self, embed=embed)
+        await interaction.message.edit(view=self)
+        await message_ticket.edit(embed=embed)
         messs = await thread.send(f"{interaction.user.mention}")
         await messs.delete()
         try:
@@ -340,23 +359,27 @@ class FermerView(discord.ui.View):
 
     @discord.ui.button(label="Fermer le ticket", style=discord.ButtonStyle.red, custom_id="ticket:close")
     async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
         thread = interaction.channel
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
-            conn.execute("""SELECT raison, membre_id FROM ticket WHERE thread_id = ?""",
-                      thread.id)
+            c.execute("""SELECT raison, membre_id FROM ticket WHERE thread_id = ?""",
+                      (thread.id,))
             content = c.fetchone()
-        if content is None:
-            await interaction.response.send_message("Probleme DB")
+            print(content)
+        if content is None or content[0] is None:
+            print("erreur 365:31")
+            await interaction.followup.send("Probleme DB")
         raison = content[0]
         membre_id = content[1]
         bot = interaction.client
-        membre = bot.get_user(membre_id)
+        membre = await bot.fetch_user(membre_id)
+        print(membre.name)
         role = discord.utils.get(interaction.user.roles, id=int(os.getenv("ROLE_MODO_ID")))
         if role:
-            await interaction.response.send_message("Comment s'est passé votre ticket ?", view=SatisfactionView(), ephemeral=True)
+            await interaction.followup.send("Comment s'est passé votre ticket ?", view=SatisfactionView(), ephemeral=True)
         else:
-            await interaction.response.send_message("Ticket fermé avec succès", ephemeral=True)
+            await interaction.followup.send("Ticket fermé avec succès", ephemeral=True)
         embed=discord.Embed(title="Ticket fermé", description="Ce ticket est fermé. Vous ne pouvez plus ecrire.")
         embed.add_field(name="Fermé par :", value=interaction.user.mention)
         embed.add_field(name="Raison ititiale du ticket : ", value=raison)
@@ -364,9 +387,9 @@ class FermerView(discord.ui.View):
         await interaction.message.edit(embed=embed, view=self)
         embed2 = discord.Embed(title="Donne-nous ton avis sur ton ticket !",
                                description="Afin d'ameliorer le systeme de ticket ou de rendre le staff plus efficace, nous souhaitons receuillir ton avis sur ce ticket.")
-        await membre.send(embed=embed2, view=AvisView(interaction.client))
+        await membre.send(embed=embed2, view=AvisView())
         thread = interaction.channel
-        ts = int((datetime.utcnow() + timedelta(seconds=86400)).timestamp())
+        ts = int((datetime.now(timezone.utc) + timedelta(seconds=86400)).timestamp())
         await thread.send(f"Ce ticket as été fermé par {interaction.user.mention}. Il se supprimera <t:{ts}:R>")
         await thread.edit(locked=True, archived=True)
         try:
@@ -376,14 +399,12 @@ class FermerView(discord.ui.View):
                 conn.commit()
         except sqlite3.OperationalError as e:
             print(e)
-        print("line 68")
 
 
 class TicketCreateView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
         print("line 13")
-        self.bot = bot
 
     @discord.ui.select(placeholder="Selectionne une option", custom_id="ticket:create", options=[
         discord.SelectOption(label="Partenariat", description="Pour proposer ou discuter d'un partenariat entre serveur/projet", emoji="🤝"),
@@ -397,7 +418,8 @@ class TicketCreateView(discord.ui.View):
         discord.SelectOption(label="Autre / privé", description="pour toute autre demande nécessitant une discussion en privé avec le staff", emoji="🔒"),
     ])
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
-        print("line 23")
+        await interaction.response.defer(ephemeral=True)
+        bot = interaction.client
         thread = await interaction.channel.create_thread(
             name=f"ticket-{interaction.user.name}",
             invitable=True
@@ -405,9 +427,7 @@ class TicketCreateView(discord.ui.View):
 
         messs = await thread.send(interaction.user.mention)
         await messs.delete()
-        print("line 30")
         raison = select.values[0]
-        print(raison)
         view = FermerView()
         embed = discord.Embed(title="Gestionnaire de ticket", description=f"Bienvenue {interaction.user.name} sur ton ticket !", colour=discord.Colour.blue())
         embed.add_field(name="Fermer le ticket", value="Tu peut fermer ton ticket à tout moment en cliquant sur ce boutton", inline=False)
@@ -415,35 +435,31 @@ class TicketCreateView(discord.ui.View):
         embed.add_field(name="Modérateur :", value="Personne")
         embed.add_field(name=f"Demandé par :", value=interaction.user.mention)
         embed.add_field(name="Statue : ", value="En attente d'un moderateur")
-        message = await thread.send(embed=embed, view=view)
-        await interaction.response.send_message(f"Ticket crée avec succès dans {thread.mention}", ephemeral=True)
+        message = await thread.send(f"Bienvenue {interaction.user.mention} sur ton ticket", embed=embed, view=view)
+        await interaction.followup.send(f"Ticket crée avec succès dans {thread.mention}", ephemeral=True)
         try:
             channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
         except discord.Forbidden as ee:
-            print(ee)
+            await interaction.followup.send("une erreur viens de se produire. Contactez **advisorypear2982** et lui transmettre ce code d'erreur : TIK:420:13.")
         if channel is None:
             print("PAS  DE CHANNEL TROUVé !!!!!!!")
-        elif channel is not None:
-            print(f"Le channel est {channel.name}")
         embed2 = discord.Embed(title="Ticket ouvert !", description="Clique sur le boutton ci-dessous pour acceder au ticket et le prendre en charge.", colour=discord.Colour.blue())
         try:
             view2 = ModoView()
         except Exception as eee:
             print(eee)
         messsages = await channel.send(embed=embed2, view=view2)
-        await interaction.message.edit(view=TicketCreateView(self.bot))
-        print("line 207")
+        await interaction.message.edit(view=TicketCreateView())
         try:
             with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
                 cur = conn.cursor()
                 cur.execute(
-                    "INSERT INTO ticket (thread_id, membre_id, statut, raison, message_modo_id) VALUES (?, ?, ?, ?, ?)",
-                    (thread.id, interaction.user.id, 1, raison, messsages.id)
+                    "INSERT INTO ticket (thread_id, membre_id, statut, raison, modo_message_id, message_ticket_id) VALUES (?, ?, ?, ?, ?, ?)",
+                    (thread.id, interaction.user.id, 1, raison, messsages.id, message.id)
                 )
                 conn.commit()
         except sqlite3.OperationalError as e:
             print(e)
-        print("line 218")
         if raison == "Partenariat":
             print("line 220")
             embed5666666 = discord.Embed(title="Bienvenue sur ton ticket partenariat !",
@@ -455,15 +471,15 @@ class TicketCreateView(discord.ui.View):
             embed5666666.add_field(name="Etape 3 : Ta pub", value="Tu donne la publicité de ton serveur avec le lien. Si tu n'a pas de pub, envoie juste le lien.", inline=False)
             embed5666666.add_field(name="Etape 5 : Notre pub & finalistion", value="Le bot envoie la pu du serveur. Le staff viendra ensuite pour publier les annonces.", inline=False)
             embed5666666.add_field(name="Alors, pret a commencer ?", value=" Clique sur le boutton \"Demarrer\" ci-dessous")
-            await thread.send(embed=embed5666666, view=PartenariatCommencerView(self.bot))
+            await thread.send(embed=embed5666666, view=PartenariatCommencerView())
 
 class PartenariatCommencerView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.bot = bot
 
     @discord.ui.button(label="Demarrer", style=discord.ButtonStyle.green, custom_id="Partenariat:Commencer")
     async def demarrer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        bot = interaction.client
         embed = discord.Embed(
             title="🤝 Conditions de partenariat",
             description=(
@@ -517,18 +533,18 @@ class PartenariatCommencerView(discord.ui.View):
             inline=False
         )
         embed.set_footer(text="En faisant un partenariat, tu t'engage a respecter ces règles")
-        view = ConditionsPartenariatView(self.bot)
+        view = ConditionsPartenariatView()
         await interaction.response.send_message(embed=embed, view=view)
         button.disabled = True
         await interaction.message.edit(view=self)
 
 class ConditionsPartenariatView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.bot = bot
 
     @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="partenariat:accepter")
     async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        bot = interaction.client
         thread = interaction.channel
 
         await interaction.response.send_message(
@@ -545,7 +561,7 @@ class ConditionsPartenariatView(discord.ui.View):
             return m.author == interaction.user and m.channel == thread
 
         try:
-            desc_msg = await self.bot.wait_for("message", timeout=240, check=check)
+            await self.bot.wait_for("message", timeout=240, check=check)
         except asyncio.TimeoutError:
             await thread.send("⏱️ Temps écoulé, on continue.")
             desc_msg = None
@@ -559,7 +575,7 @@ class ConditionsPartenariatView(discord.ui.View):
         )
 
         try:
-            pub_msg = await self.bot.wait_for("message", timeout=240, check=check)
+            await bot.wait_for("message", timeout=240, check=check)
         except asyncio.TimeoutError:
             await thread.send("⏱️ Pas de pub reçue.")
 
@@ -569,14 +585,13 @@ class ConditionsPartenariatView(discord.ui.View):
                 description="Choisis la mention souhaitée",
                 colour=discord.Colour.blurple()
             ),
-            view=MentionPartenariatView(self.bot)
+            view=MentionPartenariatView()
         )
 
 
 class MentionPartenariatView(discord.ui.View):
-    def __init__(self, bot):
+    def __init__(self):
         super().__init__(timeout=None)
-        self.bot = bot
 
     @discord.ui.select(options=[
         discord.SelectOption(label="Aucune mention", description="Aucune mention sur ton serveur", emoji="🚫"),
@@ -605,6 +620,3 @@ class Tickets(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Tickets(bot))
-
-
-print("LIGNE 500 !!!")
