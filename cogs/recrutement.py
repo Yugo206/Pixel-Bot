@@ -17,7 +17,12 @@ class Accepterview(discord.ui.View):
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, emoji="❌")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
-        membre = None
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM role_special WHERE user_id = ?", (interaction.user.id,))
+        except sqlite3.OperationalError as e:
+            interaction.response.send_message(f"Erreur de base de donnée : {e}")
         await interaction.response.send_message("La candidature de {membre.mention} viens d'être refusé ❌")
 
 
