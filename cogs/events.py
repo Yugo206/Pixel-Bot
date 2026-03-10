@@ -8,7 +8,7 @@ from cogs.setupticket import TicketCreateView
 from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView
 from dotenv import load_dotenv
 load_dotenv()
-from cogs.recrutement import ConditionsSelect, RoleSelectView
+from cogs.recrutement import ConditionsSelect, FormulaireBouton
 
 from utils.setupdatabase import DB_PATH
 
@@ -40,7 +40,8 @@ class Events(commands.Cog):
             self.bot.add_view(MentionPartenariatView())
             self.bot.add_view(SatisfactionView())
             self.bot.add_view(ConditionsPartenariatView())
-            # self.bot.add_view(RoleSelectView())
+            self.bot.add_view(ConditionsSelect())
+            self.bot.add_view(FormulaireBouton())
         except Exception as e:
             print(e)
 

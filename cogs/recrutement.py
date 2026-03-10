@@ -11,24 +11,26 @@ class Accepterview(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, emoji="✅")
-    async def accepter(self, interaction: discord.Interaction):
+    async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
         membre = None
-        await interaction.response.send_message(f"La candidature de {membre.mention} viens d'être accepté ✅ \n Un entretien vocal prevu avec ")
+        await interaction.response.send_message("La candidature de {membre.mention} viens d'être accepté ✅ \n Un entretien vocal prevu avec ")
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, emoji="❌")
-    async def refuser(self, interaction: discord.Interaction):
+    async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
         membre = None
-        await interaction.response.send_message(f"La candidature de {membre.mention} viens d'être refusé ❌")
+        await interaction.response.send_message("La candidature de {membre.mention} viens d'être refusé ❌")
 
 
 class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
-    question1 = discord.ui.TextInput(label="Pourquoi veux-tu devenir modérateur sur Pixel Party ?", style=discord.TextStyle.paragraph, required=True)
-    question2 = discord.ui.TextInput(label="Un membre insulte un autre membre. Que fais-tu ?", style=discord.TextStyle.paragraph, required=True)
-    question3 = discord.ui.TextInput(label="Si un de tes amis enfreint une règle, que fais-tu ?", style=discord.TextStyle.paragraph, required=True)
-    question4 = discord.ui.TextInput(label="Combien de temps peux-tu consacrer au serveur par semaine ?", style=discord.TextStyle.paragraph, required=True)
-    question5 = discord.ui.TextInput(label="Selon toi, c’est quoi un mauvais modérateur ?", style=discord.TextStyle.paragraph, required=True)
+    question1 = discord.ui.TextInput(label="Pourquoi devenir modérateur ?", placeholder="Pourquoi veux-tu devenir modérateur sur Pixel Party ?", style=discord.TextStyle.paragraph, required=True)
+    question2 = discord.ui.TextInput(label="Réaction face à une insulte ?", placeholder="Un membre insulte un autre membre. Que fais-tu ?", style=discord.TextStyle.paragraph, required=True)
+    question3 = discord.ui.TextInput(label="Si un ami enfreint une règle ?", placeholder="Si un de tes amis enfreint une règle, que fais-tu ?", style=discord.TextStyle.paragraph, required=True)
+    question4 = discord.ui.TextInput(label="Temps disponible par semaine ?", placeholder="Combien de temps peux-tu consacrer au serveur par semaine ?", style=discord.TextStyle.paragraph, required=True)
+    question5 = discord.ui.TextInput(label="C'est quoi un mauvais modérateur ?", placeholder="Selon toi, c’est quoi un mauvais modérateur ?", style=discord.TextStyle.paragraph, required=True)
 
     async def on_submit(self, interaction: discord.Interaction):
+        for child in self.children:
+            child.disabled = True
         embed = discord.Embed(title="Formulaire reçu", description=f"Merci {interaction.user.name} pour tes réponses!", color=discord.Color.green())
         embed.add_field(name="Pourquoi veux-tu devenir modérateur sur Pixel Party ?", value=self.question1.value, inline=False)
         embed.add_field(name="Un membre insulte un autre membre. Que fais-tu ?", value=self.question2.value, inline=False)
@@ -36,6 +38,10 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
         embed.add_field(name="Combien de temps peux-tu consacrer au serveur par semaine ?", value=self.question4.value, inline=False)
         embed.add_field(name="Selon toi, c’est quoi un mauvais modérateur ?", value=self.question5.value, inline=False)
         await interaction.response.send_message(embed=embed, ephemeral=True)
+        channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID"))) # remplace par ton channel
+        await channel.send(
+            embed=embed,
+            view=Accepterview())
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
             c.execute("UPDATE role_special SET status = 1 WHERE user_id = ?", (interaction.user.id,))
@@ -44,9 +50,14 @@ class FormulaireBouton(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Remplir le formulaire", style=discord.ButtonStyle.green, custom_id="recrutement:remplir_formulaire")
-    async def remplir_formulaire(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(RecrutementModal())
+    @discord.ui.button(label="Remplir le formulaire", style=discord.ButtonStyle.green, custom_id="recrutement:remplir:formulaire")
+    async def remplir_formulaire(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+        try:
+            modal = RecrutementModal()
+            await interaction.response.send_modal(modal)
+        except Exception as e:
+            print("ERREUR MODAL :", e)
 
 class ConditionsSelect(discord.ui.View):
     def __init__(self):
@@ -54,7 +65,7 @@ class ConditionsSelect(discord.ui.View):
 
     # ajoute un boutton pour commencer le recrutement après la description des rôles
     @discord.ui.button(label="Commencer", style=discord.ButtonStyle.green, custom_id="recrutement:commenciation")
-    async def commencer(self, interaction: discord.Interaction):
+    async def commencer(self, interaction: discord.Interaction, button: discord.ui.Button):
         print("COMMENCEMENT DU RECRUTEMENT")
         embed = discord.Embed(title="Commencer le recrutement", description=f"Bienvenue dans le système de recrutement, {interaction.user.name}!", colour=discord.Colour.blue())
         embed.add_field(name="Etape 1 :", value="Remplis le formulaire ci-dessous pour donner tes informations au staff", inline=False)
