@@ -52,7 +52,7 @@ try:
             # ⛔ TICKET FERMÉ → ON NE TOUCHE PLUS
             if statut == 3:
                 if closed_at and now - closed_at > 24 * 3600:
-                    await thread.delete()
+                    await thread.delete(reason="Ticket inactif depuis 24h.")
                     cur.execute(
                         "DELETE FROM ticket WHERE thread_id = ?",
                         (thread_id,)
