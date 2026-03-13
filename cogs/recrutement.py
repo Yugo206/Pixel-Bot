@@ -1,10 +1,12 @@
 import discord
+from discord.app_commands import guilds
 from discord.ext import commands
 from dotenv import load_dotenv
 import os
 import sqlite3
 load_dotenv()
 from utils.setupdatabase import DB_PATH
+import time
 
 class Accepterview(discord.ui.View):
     def __init__(self):
@@ -12,6 +14,10 @@ class Accepterview(discord.ui.View):
 
     @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, emoji="✅", custom_id="recrutement:accepter")
     async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        for child in self.children:
+            child.disabled = True
+        await interaction.message.edit(view=self)
         try:
             with (sqlite3.connect(DB_PATH) as conn):
                 cursor = conn.cursor()
@@ -22,14 +28,29 @@ class Accepterview(discord.ui.View):
                     await interaction.followup.send("Candidature introuvable.")
                     return
                 user_id = row[0]
-                membre = await interaction.client.fetch_user(user_id)
+                guild = interaction.guild
+                membre = guild.get_member(user_id)
+                if membre is None:
+                    membre = await guild.fetch_member(user_id)
                 cursor.execute("DELETE FROM role_special WHERE user_id = ?", (user_id,))
         except sqlite3.OperationalError as e:
             await interaction.followup.send(f"Erreur de base de donnée : {e}")
             return
         embed = discord.Embed(title="Candidature acceptée",
-                              description=f"Félicitations {interaction.user.mention} ! Tu viens d'accepter une candidature pour devenir modérateur sur Pixel Party !", color=discord.Color.green())
-        embed.add_field(name="", value="")
+                              description=f"Félicitations {membre.mention} ! Tu viens d'être accepté pour devenir modérateur sur Pixel Party !", color=discord.Color.green())
+        embed.add_field(name="Les étapes suivantes :", value="Tu va passer en modérateur test, tu aura accès à des salons privés et tu passera une période de test pour montrer tes compétences et ton activité. Ensuite, en fonction de ta performance, tu rentrera officiellement dans le staff ou tu reviendra membre.", inline=False)
+        embed.add_field(name="Durée :", value="La période de test dure 1 semaine", inline=False)
+        icon = interaction.guild.icon.url if interaction.guild.icon else None
+        embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
+        await membre.send(embed=embed)
+        role_id = int(os.getenv("ROLE_RECRUTEMENT"))
+        role = interaction.guild.get_role(role_id)
+        await membre.add_roles(role)
+        with (sqlite3.connect(DB_PATH) as conn):
+            cursor = conn.cursor()
+            time_end = int(time.time()) + 7 * 24 * 3600
+            cursor.execute("INSERT INTO role_temp (user_id, role_id, end_time) VALUES (?, ?, ?)", (user_id, role.id, int(time_end)))
+            conn.commit()
         await interaction.followup.send(f"La candidature de {membre.mention} vient d'être acceptée par {interaction.user.mention} ✅")
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, emoji="❌", custom_id="recrutement:refuser")
@@ -43,14 +64,17 @@ class Accepterview(discord.ui.View):
                 cursor.execute("SELECT user_id FROM role_special WHERE message_accepter_id = ?", (interaction.message.id,))
                 row = cursor.fetchone()
                 if row is None:
-                    await interaction.response.send_message("Candidature introuvable.", ephemeral=True)
+                    await interaction.response.send_message("Candidature introuvable.")
                     return
                 user_id = row[0]
                 membre = await interaction.client.fetch_user(user_id)
+                embed = discord.Embed(title="Candidature refusée", description="Malheureusement, ta candidature a été refusé pour devenir modérateur sur Pixel Party. N'hésite pas à retenter ta chance plus tard !", color=discord.Color.red())
+                icon = interaction.guild.icon.url if interaction.guild.icon else None
+                embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
                 await membre.send(f"Ta candidature a été refusé par {interaction.user.mention}, n'hésite pas à retenter ta chance plus tard !")
                 cursor.execute("DELETE FROM role_special WHERE user_id = ?", (user_id,))
         except sqlite3.OperationalError as e:
-            await interaction.response.send_message(f"Erreur de base de donnée : {e}", ephemeral=True)
+            await interaction.response.send_message(f"Erreur de base de donnée : {e}")
             return
         await interaction.response.send_message(f"La candidature de {membre.mention} viens d'être refusé par {interaction.user.mention} ❌")
 
@@ -69,6 +93,8 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
         embed.add_field(name="Si un de tes amis enfreint une règle, que fais-tu ?", value=self.question3.value, inline=False)
         embed.add_field(name="Combien de temps peux-tu consacrer au serveur par semaine ?", value=self.question4.value, inline=False)
         embed.add_field(name="Selon toi, c’est quoi un mauvais modérateur ?", value=self.question5.value, inline=False)
+        icon = interaction.guild.icon.url if interaction.guild.icon else None
+        embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
         await interaction.response.send_message(embed=embed)
         channel_id = int(os.getenv("CHANNEL_MODO_ID"))
         # The modal is submitted in DM, so interaction.guild can be None.
@@ -84,13 +110,13 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
             try:
                 c = conn.cursor()
                 c.execute(
-                    "INSERT OR REPLACE INTO role_special (user_id, status, message_accepter_id) VALUES (?, ?, ?)",
-                    (interaction.user.id, 1, msg.id)
+                    "INSERT INTO role_special (user_id, status, message_accepter_id) VALUES (?, ?, ?)",
+                    (interaction.user.id, 1, msg.id,)
                 )
                 conn.commit()
             except sqlite3.OperationalError as e:
-                print(e)
                 await interaction.followup.send(f"Erreur de base de donnée : {e}")
+                return
 
 
 class FormulaireBouton(discord.ui.View):
@@ -133,6 +159,8 @@ class ConditionsSelect(discord.ui.View):
         embed.add_field(name="Etape 3 : ", value="Tu rentre (ou non) dans le staff et tu est en phase de **test**", inline=False)
         embed.add_field(name="Ensuite ?", value="En fonction de ton activité et de tes compétences, a la fin de la periode de test, tu rentre officielement dans le staff ou tu reviens membre.", inline=False)
         embed.add_field(name="Tu est prêt.e ?", value="Selectionne le rôle staff que tu souhaite avoir mais attention : après avoir cliqué, tu t'engage et pas de retour possible. Tout abus sera sanctionné", inline=False)
+        icon = interaction.guild.icon.url if interaction.guild.icon else None
+        embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
         embed2 = discord.Embed(title="La suite dans les messages privés", description="Afin de faciliter pour la persistance des messages pour mieux t'y retrouver, la suite du recrutement est envoyé dans les messages privés", colour=discord.Colour.blue())
         try:
             await interaction.followup.send(embed=embed2, ephemeral=True)
