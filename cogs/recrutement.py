@@ -1,5 +1,4 @@
 import discord
-from discord.app_commands import guilds
 from discord.ext import commands
 from dotenv import load_dotenv
 import os
@@ -7,6 +6,50 @@ import sqlite3
 load_dotenv()
 from utils.setupdatabase import DB_PATH
 import time
+
+
+class RaisonModal(discord.ui.Modal, title="Raison du refus"):
+    raison = discord.ui.TextInput(
+        style=discord.TextStyle.paragraph,
+        placeholder="Cette personne n'est pas accepté dans le staff car ...",
+        required=True,
+        label="Explique pourquoi tu refuse le recutement de cette personne",
+        max_length=500,
+        min_length=10
+    )
+    def __init__(self, ctx, membre: discord.Member):
+        super().__init__()
+        self.ctx = ctx
+        self.membre = membre
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raison = self.raison.value
+        membre = self.membre
+        message = await interaction.channel.fetch_message(self.ctx.id)
+        view = message.view
+        for item in view.children:
+            item.disabled = True
+        await message.edit(view=view)
+        await interaction.response.send_message(
+            f"La candidature de {membre.mention} a été refusée par {interaction.user.mention} avec raison : {self.raison.value}"
+        )
+        try:
+
+                embed = discord.Embed(title="Candidature refusée",
+                                      description="Malheureusement, ta candidature a été refusé pour devenir modérateur sur Pixel Party. N'hésite pas à retenter ta chance plus tard !",
+                                      color=discord.Color.red())
+                icon = interaction.guild.icon.url if interaction.guild.icon else None
+                embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
+                embed.add_field(name="Raison du refus :", value=raison, inline=False)
+                await membre.send(embed=embed)
+                with sqlite3.connect(DB_PATH) as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("DELETE FROM role_special WHERE user_id = ?", (membre.id,))
+                    conn.commit()
+        except sqlite3.OperationalError as e:
+            await interaction.followup.send(f"Erreur de base de donnée : {e}")
+            return
+
 
 class Accepterview(discord.ui.View):
     def __init__(self):
@@ -55,9 +98,6 @@ class Accepterview(discord.ui.View):
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, emoji="❌", custom_id="recrutement:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
-        for child in self.children:
-            child.disabled = True
-        await interaction.message.edit(view=self)
         try:
             with (sqlite3.connect(DB_PATH) as conn):
                 cursor = conn.cursor()
@@ -68,23 +108,17 @@ class Accepterview(discord.ui.View):
                     return
                 user_id = row[0]
                 membre = await interaction.client.fetch_user(user_id)
-                embed = discord.Embed(title="Candidature refusée", description="Malheureusement, ta candidature a été refusé pour devenir modérateur sur Pixel Party. N'hésite pas à retenter ta chance plus tard !", color=discord.Color.red())
-                icon = interaction.guild.icon.url if interaction.guild.icon else None
-                embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
-                await membre.send(f"Ta candidature a été refusé par {interaction.user.mention}, n'hésite pas à retenter ta chance plus tard !")
-                cursor.execute("DELETE FROM role_special WHERE user_id = ?", (user_id,))
-        except sqlite3.OperationalError as e:
-            await interaction.response.send_message(f"Erreur de base de donnée : {e}")
-            return
-        await interaction.response.send_message(f"La candidature de {membre.mention} viens d'être refusé par {interaction.user.mention} ❌")
 
+                await interaction.response.send_modal(RaisonModal(interaction.message, membre))
+        except sqlite3.Error as e:
+            await interaction.followup.send(f"Erreur : {e}")
 
 class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
-    question1 = discord.ui.TextInput(label="Pourquoi devenir modérateur ?", placeholder="Pourquoi veux-tu devenir modérateur sur Pixel Party ?", style=discord.TextStyle.paragraph, required=True)
-    question2 = discord.ui.TextInput(label="Réaction face à une insulte ?", placeholder="Un membre insulte un autre membre. Que fais-tu ?", style=discord.TextStyle.paragraph, required=True)
-    question3 = discord.ui.TextInput(label="Si un ami enfreint une règle ?", placeholder="Si un de tes amis enfreint une règle, que fais-tu ?", style=discord.TextStyle.paragraph, required=True)
+    question1 = discord.ui.TextInput(label="Pourquoi devenir modérateur ?", placeholder="Pourquoi veux-tu devenir modérateur sur Pixel Party ?", style=discord.TextStyle.paragraph, required=True, min_length=50)
+    question2 = discord.ui.TextInput(label="Réaction face à une insulte ?", placeholder="Un membre insulte un autre membre. Que fais-tu ?", style=discord.TextStyle.paragraph, required=True, min_length=50)
+    question3 = discord.ui.TextInput(label="Si un ami enfreint une règle ?", placeholder="Si un de tes amis enfreint une règle, que fais-tu ?", style=discord.TextStyle.paragraph, required=True, min_length=50)
     question4 = discord.ui.TextInput(label="Temps disponible par semaine ?", placeholder="Combien de temps peux-tu consacrer au serveur par semaine ?", style=discord.TextStyle.paragraph, required=True)
-    question5 = discord.ui.TextInput(label="C'est quoi un mauvais modérateur ?", placeholder="Selon toi, c’est quoi un mauvais modérateur ?", style=discord.TextStyle.paragraph, required=True)
+    question5 = discord.ui.TextInput(label="C'est quoi un mauvais modérateur ?", placeholder="Selon toi, c’est quoi un mauvais modérateur ?", style=discord.TextStyle.paragraph, required=True, min_length=50)
 
     async def on_submit(self, interaction: discord.Interaction):
         embed = discord.Embed(title="Formulaire reçu", description=f"Merci {interaction.user.mention} pour tes réponses!", color=discord.Color.green())

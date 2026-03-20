@@ -139,21 +139,21 @@ try:
             # Si la période de test est terminée
             if now >= end_time:
 
-                guild = bot.guilds[0]
-                member = guild.get_member(user_id)
+                guild = bot.fetch_guild(int(os.getenv("GUILD_ID")))
+                member = bot.fetch_user(user_id)
 
                 if not member:
                     continue
 
                 role = guild.get_role(role_id)
-                staff_channel = discord.utils.get(guild.text_channels, name="staff")
+                staff_channel = bot.fetch_channel(int(os.getenv("CHANNEL_MODO_ID")))
 
                 if not staff_channel:
                     continue
 
                 embed = discord.Embed(
                     title="Fin de période de test",
-                    description=f"La période de test de {member.mention} est terminée.\n\nVoulez‑vous **le garder dans le staff** ou **retirer son rôle** ?",
+                    description=f"La période de test de {member.mention} est terminée.\n Voulez‑vous **le garder dans le staff** ou **retirer son rôle** ?",
                     color=discord.Color.orange()
                 )
 
