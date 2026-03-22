@@ -106,7 +106,6 @@ class Accepterview(discord.ui.View):
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, emoji="❌", custom_id="recrutement:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
-        print("Interaction reussi")
         try:
             with (sqlite3.connect(DB_PATH) as conn):
                 cursor = conn.cursor()
@@ -166,7 +165,6 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
                 )
                 conn.commit()
 
-            print("✅ Formulaire traité correctement")
 
         except Exception as e:
             print("💥 ERREUR MODAL :", e)
@@ -201,8 +199,38 @@ class ConditionsSelect(discord.ui.View):
             await interaction.followup.send(f"Erreur de base de donnée : {e}", ephemeral=True)
             return
 
-        if row and row[0] == None:
-            await interaction.followup.send("Tu as déjà commencé le recrutement !", ephemeral=True)
+        # ---------------------------------------------------------
+        # 🔒 VERIFICATIONS AVANT RECRUTEMENT
+        # ---------------------------------------------------------
+
+        # 1. Vérifie si déjà en procédure
+        if row:
+            await interaction.followup.send("Tu as déjà une candidature en cours !", ephemeral=True)
+            return
+
+        # 2. Vérifie ancienneté (1 mois)
+        joined_at = interaction.user.joined_at
+        if joined_at is None:
+            await interaction.followup.send("Impossible de vérifier ton ancienneté.", ephemeral=True)
+            return
+
+        import datetime
+        if (discord.utils.utcnow() - joined_at).days < 30:
+            await interaction.followup.send("Tu dois être sur le serveur depuis au moins 1 mois.", ephemeral=True)
+            return
+
+        # 3. Vérifie les avertissements (max 3)
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT COUNT(*) FROM warns WHERE user_id = ?", (interaction.user.id,))
+                warn_count = cur.fetchone()[0]
+        except sqlite3.Error:
+            await interaction.followup.send("Erreur lors de la vérification des avertissements.", ephemeral=True)
+            return
+
+        if warn_count > 3:
+            await interaction.followup.send("Tu as trop d'avertissements pour postuler.", ephemeral=True)
             return
         embed = discord.Embed(title="Commencer le recrutement", description=f"Bienvenue dans le système de recrutement, {interaction.user.name}!", colour=discord.Colour.blue())
         embed.add_field(name="Etape 1 :", value="Remplis le formulaire ci-dessous pour donner tes informations au staff", inline=False)
@@ -217,8 +245,8 @@ class ConditionsSelect(discord.ui.View):
             await interaction.followup.send(embed=embed2, ephemeral=True)
             await interaction.user.send(embed=embed, view=FormulaireBouton())
         except discord.Forbidden:
-            await interaction.followup.send("Tu n'a pas activé les messages privés !", embed=embed, ephemeral=True)
-            await interaction.followup.send("Tu n'a pas activé les messages privés ! Active-les, c'est **obligatoire** !", ephemeral=True)
+            await interaction.followup.send("Tu n'as pas activé les messages privés !", embed=embed, ephemeral=True)
+            await interaction.followup.send("Tu n'as pas activé les messages privés ! Active-les, c'est **obligatoire** !", ephemeral=True)
 
 class RecrutementCog(commands.Cog):
     def __init__(self, bot):
