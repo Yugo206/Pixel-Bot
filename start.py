@@ -139,14 +139,23 @@ try:
             # Si la période de test est terminée
             if now >= end_time:
 
-                guild = bot.fetch_guild(int(os.getenv("GUILD_ID")))
-                member = bot.fetch_user(user_id)
+                guild_id = int(os.getenv("GUILD_ID"))
+                guild = bot.get_guild(guild_id)
+                if guild is None:
+                    guild = await bot.fetch_guild(guild_id)
+
+                member = guild.get_member(user_id)
+                if member is None:
+                    member = await guild.fetch_member(user_id)
 
                 if not member:
                     continue
 
                 role = guild.get_role(role_id)
-                staff_channel = bot.fetch_channel(int(os.getenv("CHANNEL_MODO_ID")))
+                channel_id = int(os.getenv("CHANNEL_MODO_ID"))
+                staff_channel = bot.get_channel(channel_id)
+                if staff_channel is None:
+                    staff_channel = await bot.fetch_channel(channel_id)
 
                 if not staff_channel:
                     continue
@@ -157,7 +166,10 @@ try:
                     color=discord.Color.orange()
                 )
 
-                await staff_channel.send(embed=embed)
+                try:
+                    await staff_channel.send(embed=embed)
+                except Exception as e:
+                    print("ERREUR ENVOI STAFF :", e)
 
                 # On supprime l'entrée pour éviter de redemander
                 cur.execute(
