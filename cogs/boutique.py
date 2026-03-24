@@ -14,21 +14,17 @@ class BoutiqueCog(commands.Cog):
 
     class AchatSelect(discord.ui.Select):
         def __init__(self):
-            print("line 13")
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
-            print("line 17")
             try:
                 items = []
-                cursor.execute("SELECT valeur, name, price, type FROM shop")
+                cursor.execute("SELECT id, name, price, type, valeur, duration FROM shop")
                 items = cursor.fetchall()
             except sqlite3.OperationalError as e:
                 print(e)
-            print("line 20")
             conn.close()
 
             if not items:
-                print("Line 24")
                 options = [
                     discord.SelectOption(
                         label="Boutique vide",
@@ -37,15 +33,14 @@ class BoutiqueCog(commands.Cog):
                     )
                 ]
             else:
-                print("Line 33")
                 try:
                     options = [
                         discord.SelectOption(
                             label=name,
                             description=f"{price} €",
-                            value=str(value)
+                            value=str(item_id)
                         )
-                        for value, name, price, type in items
+                        for item_id, name, price, type, valeur, duration in items
                     ]
                 except Exception as e:
                     print(e)
@@ -57,7 +52,6 @@ class BoutiqueCog(commands.Cog):
                 max_values=1,
                 options=options
             )
-            print("Line 49")
 
         async def callback(self, interaction: discord.Interaction):
             item_id = int(self.values[0])
@@ -67,7 +61,7 @@ class BoutiqueCog(commands.Cog):
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT valeur, name, price, type, duration FROM shop WHERE valeur = ?",
+                "SELECT id, name, price, type, valeur, duration FROM shop WHERE id = ?",
                 (item_id,)
             )
 
@@ -81,32 +75,64 @@ class BoutiqueCog(commands.Cog):
                 )
                 return
 
-            valeur, name, price, type, duration = result
+            item_id, name, price, type, valeur, duration = result
 
             if type == 1:
-                role = interaction.guild.get_role(valeur)
+                role = interaction.guild.fetch_role(int(valeur))
+                await interaction.response.send_message(f"Objet acheté : {name} ({price})", ephemeral=True)
                 if role is None:
-                    await interaction.response.send_message(
-                        "❌ Rôle introuvable.",
-                        ephemeral=True
-                    )
+                    await interaction.response.send_message("❌ Rôle introuvable.", ephemeral=True)
                     return
-                if time is not None:
-                    try:
-                        expires_at = int(time.time()) + duration
 
-                        await interaction.user.add_roles(role)
+                await interaction.user.add_roles(role)
 
-                        conn = sqlite3.connect(DB_PATH)
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "INSERT INTO roles_temp (user_id, role_id, expires_at) VALUES (?, ?, ?)",
-                            (interaction.user.id, role.id, expires_at)
-                        )
-                        conn.commit()
-                        conn.close()
-                    except (discord.Forbidden, sqlite3.OperationalError) as e:
-                        interaction.response.send_message(f"Erreur ! : {e}")
+                if duration is not None:
+                    expires_at = int(time.time()) + (duration * 86400)
+
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        "INSERT INTO roles_temp (user_id, role_id, end_time) VALUES (?, ?, ?)",
+                        (interaction.user.id, role.id, expires_at)
+                    )
+                    conn.commit()
+                    conn.close()
+
+            elif type == 2:
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    "SELECT quantite FROM inventaire WHERE user_id = ? AND item_id = ?",
+                    (interaction.user.id, valeur)
+                )
+                result_inv = cursor.fetchone()
+
+                if result_inv:
+                    cursor.execute(
+                        "UPDATE inventaire SET quantite = quantite + 1 WHERE user_id = ? AND item_id = ?",
+                        (interaction.user.id, valeur)
+                    )
+                else:
+                    cursor.execute(
+                        "INSERT INTO inventaire (user_id, item_id, quantite) VALUES (?, ?, 1)",
+                        (interaction.user.id, valeur)
+                    )
+
+                conn.commit()
+                conn.close()
+
+            elif type == 3:
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    "UPDATE utilisateurs SET xp = xp + ? WHERE user_id = ?",
+                    (valeur, interaction.user.id)
+                )
+
+                conn.commit()
+                conn.close()
 
             await interaction.response.send_message(
                 f"✅ Tu as acheté **{name}** pour **{price} €**",
@@ -121,13 +147,10 @@ class BoutiqueCog(commands.Cog):
         def __init__(self):
             super().__init__(timeout=60)
             self.add_item(BoutiqueCog.AchatSelect())
-            print("Line 74")
 
     @app_commands.command(name="boutique", description="Regarde la boutique")
     async def boutique(self, interaction: discord.Interaction):
-        print("Line 78")
         await interaction.response.defer()
-        print("COMMANDE /boutique")
 
         embed = discord.Embed(
             title="🛍 Boutique",
@@ -138,24 +161,36 @@ class BoutiqueCog(commands.Cog):
         cursor = conn.cursor()
 
         try:
-            print("Line 81")
-            cursor.execute("SELECT name, price FROM shop")
+            cursor.execute("SELECT name, price, type, duration FROM shop")
             items = cursor.fetchall()
             conn.close()
         except sqlite3.OperationalError as e:
             print("ERREUR DE SQL !!! L'erreur est : ", e)
-        print("Line 94")
 
         if not items:
             embed.description = "❌ Boutique vide"
-            print("Line 98")
         else:
-            print("Line 100")
-            for name, price in items:
-                embed.add_field(name=name, value=f"{price} €", inline=False)
+            for name, price, type, duration in items:
+                if type == 1:
+                    type_str = "Rôle"
+                    if duration is not None:
+                        type_str += " temporaire"
+                    else:
+                        type_str += " permanent"
+                elif type == 2:
+                    type_str = "Objet d'inventaire"
+                elif type == 3:
+                    type_str = "XP"
+                else:
+                    type_str = "Inconnu"
+
+                desc = f"💰 {price} €\n📦 Type: {type_str}"
+                if duration is not None and type == 1:
+                    desc += f"\n⏳ Durée: {duration} jours"
+
+                embed.add_field(name=name, value=desc, inline=False)
 
         await interaction.followup.send(embed=embed, view=BoutiqueCog.BoutiqueView())
-        print("Line 105")
 
 
 async def setup(bot):
