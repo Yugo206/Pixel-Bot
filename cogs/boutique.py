@@ -78,8 +78,12 @@ class BoutiqueCog(commands.Cog):
             item_id, name, price, type, valeur, duration = result
 
             if type == 1:
-                role = interaction.guild.fetch_role(int(valeur))
-                await interaction.response.send_message(f"Objet acheté : {name} ({price})", ephemeral=True)
+                role = interaction.guild.get_role(int(valeur))
+                if role is None:
+                    try:
+                        role = await interaction.guild.fetch_role(int(valeur))
+                    except:
+                        role = None
                 if role is None:
                     await interaction.response.send_message("❌ Rôle introuvable.", ephemeral=True)
                     return
@@ -135,7 +139,7 @@ class BoutiqueCog(commands.Cog):
                 conn.close()
 
             await interaction.response.send_message(
-                f"✅ Tu as acheté **{name}** pour **{price} €**",
+                f"🛒 **Achat réussi !**\n\n📦 Objet : **{name}**\n💰 Prix : **{price} €**",
                 ephemeral=True
             )
 
@@ -184,9 +188,9 @@ class BoutiqueCog(commands.Cog):
                 else:
                     type_str = "Inconnu"
 
-                desc = f"💰 {price} €\n📦 Type: {type_str}"
+                desc = f"💰 **Prix :** {price} €\n📦 **Type :** {type_str}"
                 if duration is not None and type == 1:
-                    desc += f"\n⏳ Durée: {duration} jours"
+                    desc += f"\n⏳ **Durée :** {duration} jours"
 
                 embed.add_field(name=name, value=desc, inline=False)
 

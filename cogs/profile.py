@@ -24,22 +24,26 @@ class Profile(commands.Cog):
 
     @app_commands.command(name="profil", description="Afficher ton profil")
     async def profil(self, interaction: discord.Interaction):
-        await interaction.response.defer()
+        if not interaction.response.is_done():
+            await interaction.response.defer()
         embed = discord.Embed(title="Profil", description="Ton profil contient ton **argent**, ton **XP** et tes **niveaux**", color=discord.Color.green())
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = ?", (interaction.user.id,))
         result = cursor.fetchone()
-        argent = result[0] if result else 0
+        argent = result[0] if result and result[0] is not None else 0
         embed.add_field(name="Argent :", value=f"{argent} €", inline=False)
         cursor.execute("SELECT xp FROM utilisateurs WHERE user_id = ?", (interaction.user.id,))
         result1 = cursor.fetchone()
-        xp = result1[0] if result1 else 0
+        xp = result1[0] if result1 and result1[0] is not None else 0
         embed.add_field(name="Experience :", value=f"{xp}", inline=False)
         nv = self.get_level(xp)
         embed.add_field(name="Niveau :", value=f"{nv}", inline=False)
-        await interaction.followup.send(embed=embed)
+        conn.close()
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
     await bot.add_cog(Profile(bot))
-
