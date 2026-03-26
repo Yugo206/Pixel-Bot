@@ -1,6 +1,5 @@
 import sqlite3
 import time
-from code import interact
 import discord
 from discord.ext import commands
 import os
@@ -600,6 +599,7 @@ class MentionPartenariatView(discord.ui.View):
         discord.SelectOption(label="Mention \"Everyone\"", description="Mention everyone sur ton serveur", emoji="🧑‍🧑‍🧒‍🧒")
     ], custom_id="partenariat:mention")
     async def select_callback(self, interaction: discord.Interaction, select : discord.ui.Select):
+        bot = interaction.client
         mention = select.values[0]
         channel = interaction.message.channel
         await interaction.response.send_message(f"Mention choisi : {mention}")

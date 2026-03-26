@@ -10,7 +10,7 @@ from discord import app_commands
 
 class TradeView(discord.ui.View):
     def __init__(self, trader, annonce):
-        super().__init__()
+        super().__init__(timeout=None)
         self.trader = trader
         self.annonce = annonce
 

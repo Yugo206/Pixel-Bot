@@ -24,7 +24,6 @@ class BoutiqueCog(commands.Cog):
                 items = cursor.fetchall()
             except sqlite3.OperationalError as e:
                 print(e)
-            print("line 20")
             conn.close()
 
             if not items:
@@ -37,7 +36,6 @@ class BoutiqueCog(commands.Cog):
                     )
                 ]
             else:
-                print("Line 33")
                 try:
                     options = [
                         discord.SelectOption(
@@ -57,7 +55,6 @@ class BoutiqueCog(commands.Cog):
                 max_values=1,
                 options=options
             )
-            print("Line 49")
 
         async def callback(self, interaction: discord.Interaction):
             item_id = int(self.values[0])
@@ -117,11 +114,9 @@ class BoutiqueCog(commands.Cog):
             self.placeholder = "Objet acheté ✔"
             await interaction.message.edit(view=self.view)
 
-    class BoutiqueView(discord.ui.View):
-        def __init__(self):
-            super().__init__(timeout=60)
-            self.add_item(BoutiqueCog.AchatSelect())
-            print("Line 74")
+class BoutiqueView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
 
     @app_commands.command(name="boutique", description="Regarde la boutique")
     async def boutique(self, interaction: discord.Interaction):
