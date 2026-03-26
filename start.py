@@ -196,7 +196,9 @@ try:
     @bot.event
     async def on_ready():
         print(f"Connecté en tant que {bot.user}")
-        await bot.tree.sync()
+        if not hasattr(bot, "synced"):
+            await bot.tree.sync()
+            bot.synced = True
 
         if not ticket_watcher.is_running():
             ticket_watcher.start()
