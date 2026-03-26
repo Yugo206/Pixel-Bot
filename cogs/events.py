@@ -92,7 +92,7 @@ class Events(commands.Cog):
 
         # User
         cursor.execute(
-            "INSERT OR IGNORE INTO utilisateurs (user_id) VALUES (?)",
+            "INSERT OR IGNORE INTO utilisateurs (user_id, xp) VALUES (?, 40)",
             (message.author.id,)
         )
 

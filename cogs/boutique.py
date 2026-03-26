@@ -54,6 +54,7 @@ class BoutiqueCog(commands.Cog):
             )
 
         async def callback(self, interaction: discord.Interaction):
+            await interaction.response.defer(ephemeral=True)
             item_id = int(self.values[0])
             print("Item sélectionné :", item_id)
 
@@ -69,13 +70,34 @@ class BoutiqueCog(commands.Cog):
             conn.close()
 
             if not result:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "❌ Objet introuvable.",
                     ephemeral=True
                 )
                 return
 
             item_id, name, price, type, valeur, duration = result
+
+            # Vérification de l'argent
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+
+            cursor.execute(
+                "SELECT argent FROM utilisateurs WHERE user_id = ?",
+                (interaction.user.id,)
+            )
+            result_money = cursor.fetchone()
+
+            argent = result_money[0] if result_money and result_money[0] is not None else 0
+
+            if argent < price:
+                conn.close()
+                await interaction.followup.send(
+                    f"❌ Tu n'as pas assez d'argent.\n💰 Prix : {price} € | 💸 Ton solde : {argent} €",
+                    ephemeral=True
+                )
+                return
+
 
             if type == 1:
                 role = interaction.guild.get_role(int(valeur))
@@ -85,7 +107,7 @@ class BoutiqueCog(commands.Cog):
                     except:
                         role = None
                 if role is None:
-                    await interaction.response.send_message("❌ Rôle introuvable.", ephemeral=True)
+                    await interaction.followup.send("❌ Rôle introuvable.", ephemeral=True)
                     return
 
                 await interaction.user.add_roles(role)
@@ -96,9 +118,10 @@ class BoutiqueCog(commands.Cog):
                     conn = sqlite3.connect(DB_PATH)
                     cursor = conn.cursor()
                     cursor.execute(
-                        "INSERT INTO roles_temp (user_id, role_id, end_time) VALUES (?, ?, ?)",
+                        "INSERT INTO role_temp (user_id, role_id, end_time) VALUES (?, ?, ?)",
                         (interaction.user.id, role.id, expires_at)
                     )
+                    print(f"[DB] Role temporaire ajouté : user={interaction.user.id}, role={role.id}, expires={expires_at}")
                     conn.commit()
                     conn.close()
 
@@ -138,7 +161,17 @@ class BoutiqueCog(commands.Cog):
                 conn.commit()
                 conn.close()
 
-            await interaction.response.send_message(
+            # Retirer l'argent après succès
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE utilisateurs SET argent = argent - ? WHERE user_id = ?",
+                (price, interaction.user.id)
+            )
+            conn.commit()
+            conn.close()
+
+            await interaction.followup.send(
                 f"🛒 **Achat réussi !**\n\n📦 Objet : **{name}**\n💰 Prix : **{price} €**",
                 ephemeral=True
             )
@@ -188,9 +221,9 @@ class BoutiqueCog(commands.Cog):
                 else:
                     type_str = "Inconnu"
 
-                desc = f"💰 **Prix :** {price} €\n📦 **Type :** {type_str}"
+                desc = f" **Prix :** {price} €\n **Type :** {type_str}"
                 if duration is not None and type == 1:
-                    desc += f"\n⏳ **Durée :** {duration} jours"
+                    desc += f"\n **Durée :** {duration} jours"
 
                 embed.add_field(name=name, value=desc, inline=False)
 
