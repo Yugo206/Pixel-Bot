@@ -403,7 +403,6 @@ class FermerView(discord.ui.View):
 class TicketCreateView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
-        print("line 13")
 
     @discord.ui.select(placeholder="Selectionne une option", custom_id="ticket:create", options=[
         discord.SelectOption(label="Partenariat", description="Pour proposer ou discuter d'un partenariat entre serveur/projet", emoji="🤝"),
