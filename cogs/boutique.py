@@ -183,7 +183,6 @@ class BoutiqueCog(commands.Cog):
     class BoutiqueView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=60)
-            self.add_item(BoutiqueCog.AchatSelect())
 
     @app_commands.command(name="boutique", description="Regarde la boutique")
     async def boutique(self, interaction: discord.Interaction):
