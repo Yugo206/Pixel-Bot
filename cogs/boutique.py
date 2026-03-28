@@ -8,126 +8,193 @@ load_dotenv()
 from utils.setupdatabase import DB_PATH
 
 
-class BoutiqueCog(commands.Cog):
-    def __init__(self, bot):
-        self.bot = bot
 
-    class AchatSelect(discord.ui.Select):
-        def __init__(self):
-            print("line 13")
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            print("line 17")
+class AchatSelect(discord.ui.Select):
+    def __init__(self):
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        try:
+            items = []
+            cursor.execute("SELECT id, name, price, type, valeur, duration FROM shop")
+            items = cursor.fetchall()
+        except sqlite3.OperationalError as e:
+            print(e)
+        conn.close()
+
+        if not items:
+            options = [
+                discord.SelectOption(
+                    label="Boutique vide",
+                    description="Aucun objet disponible",
+                    value="0"
+                )
+            ]
+        else:
             try:
-                items = []
-                cursor.execute("SELECT valeur, name, price, type FROM shop")
-                items = cursor.fetchall()
-            except sqlite3.OperationalError as e:
-                print(e)
-            print("line 20")
-            conn.close()
-
-            if not items:
-                print("Line 24")
                 options = [
                     discord.SelectOption(
-                        label="Boutique vide",
-                        description="Aucun objet disponible",
-                        value="0"
+                        label=name,
+                        description=f"{price} €",
+                        value=str(item_id)
                     )
+                    for item_id, name, price, type, valeur, duration in items
                 ]
-            else:
-                print("Line 33")
-                try:
-                    options = [
-                        discord.SelectOption(
-                            label=name,
-                            description=f"{price} €",
-                            value=str(value)
-                        )
-                        for value, name, price, type in items
-                    ]
-                except Exception as e:
-                    print(e)
+            except Exception as e:
+                print(e)
 
+        super().__init__(
+            placeholder="🛒 Choisis un objet",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
 
-            super().__init__(
-                placeholder="🛒 Choisis un objet",
-                min_values=1,
-                max_values=1,
-                options=options
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        item_id = int(self.values[0])
+        print("Item sélectionné :", item_id)
+
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT id, name, price, type, valeur, duration FROM shop WHERE id = ?",
+            (item_id,)
+        )
+
+        result = cursor.fetchone()
+        conn.close()
+
+        if not result:
+            await interaction.followup.send(
+                "❌ Objet introuvable.",
+                ephemeral=True
             )
-            print("Line 49")
+            return
 
-        async def callback(self, interaction: discord.Interaction):
-            item_id = int(self.values[0])
-            print("Item sélectionné :", item_id)
+        item_id, name, price, type, valeur, duration = result
 
+        # Vérification de l'argent
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+
+        cursor.execute(
+            "SELECT argent FROM utilisateurs WHERE user_id = ?",
+            (interaction.user.id,)
+        )
+        result_money = cursor.fetchone()
+
+        argent = result_money[0] if result_money and result_money[0] is not None else 0
+
+        if argent < price:
+            conn.close()
+            await interaction.followup.send(
+                f"❌ Tu n'as pas assez d'argent.\n💰 Prix : {price} € | 💸 Ton solde : {argent} €",
+                ephemeral=True
+            )
+            return
+
+        if type == 1:
+            role = interaction.guild.get_role(int(valeur))
+            if role is None:
+                try:
+                    role = await interaction.guild.fetch_role(int(valeur))
+                except:
+                    role = None
+            if role is None:
+                await interaction.followup.send("❌ Rôle introuvable.", ephemeral=True)
+                return
+
+            await interaction.user.add_roles(role)
+
+            if duration is not None:
+                expires_at = int(time.time()) + (duration * 86400)
+
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT INTO roles_temp (user_id, role_id, end_time) VALUES (?, ?, ?)",
+                    (interaction.user.id, role.id, expires_at)
+                )
+                print(f"[DB] Role temporaire ajouté : user={interaction.user.id}, role={role.id}, expires={expires_at}")
+                conn.commit()
+                conn.close()
+
+            # Confirmation message for role
+            await interaction.followup.send(
+                f"🛒 **Achat réussi !**\n\n🎭 Rôle : **{role.name}**\n💰 Prix : **{price} €**",
+                ephemeral=True
+            )
+
+        elif type == 2:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
 
             cursor.execute(
-                "SELECT valeur, name, price, type, duration FROM shop WHERE valeur = ?",
-                (item_id,)
+                "SELECT quantite FROM inventaire WHERE user_id = ? AND item_id = ?",
+                (interaction.user.id, valeur)
             )
+            result_inv = cursor.fetchone()
 
-            result = cursor.fetchone()
+            if result_inv:
+                cursor.execute(
+                    "UPDATE inventaire SET quantite = quantite + 1 WHERE user_id = ? AND item_id = ?",
+                    (interaction.user.id, valeur)
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO inventaire (user_id, item_id, quantite) VALUES (?, ?, 1)",
+                    (interaction.user.id, valeur)
+                )
+
+            conn.commit()
             conn.close()
 
-            if not result:
-                await interaction.response.send_message(
-                    "❌ Objet introuvable.",
-                    ephemeral=True
-                )
-                return
+        elif type == 3:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
 
-            valeur, name, price, type, duration = result
+            cursor.execute(
+                "UPDATE utilisateurs SET xp = xp + ? WHERE user_id = ?",
+                (valeur, interaction.user.id)
+            )
 
-            if type == 1:
-                role = interaction.guild.get_role(valeur)
-                if role is None:
-                    await interaction.response.send_message(
-                        "❌ Rôle introuvable.",
-                        ephemeral=True
-                    )
-                    return
-                if time is not None:
-                    try:
-                        expires_at = int(time.time()) + duration
+            conn.commit()
+            conn.close()
 
-                        await interaction.user.add_roles(role)
+        # Retirer l'argent après succès
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE utilisateurs SET argent = argent - ? WHERE user_id = ?",
+            (price, interaction.user.id)
+        )
+        conn.commit()
+        conn.close()
 
-                        conn = sqlite3.connect(DB_PATH)
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "INSERT INTO roles_temp (user_id, role_id, expires_at) VALUES (?, ?, ?)",
-                            (interaction.user.id, role.id, expires_at)
-                        )
-                        conn.commit()
-                        conn.close()
-                    except (discord.Forbidden, sqlite3.OperationalError) as e:
-                        interaction.response.send_message(f"Erreur ! : {e}")
-
-            await interaction.response.send_message(
-                f"✅ Tu as acheté **{name}** pour **{price} €**",
+        # Only send generic confirmation if not role
+        if type != 1:
+            await interaction.followup.send(
+                f"🛒 **Achat réussi !**\n\n📦 Objet : **{name}**\n💰 Prix : **{price} €**",
                 ephemeral=True
             )
 
-            self.disabled = True
-            self.placeholder = "Objet acheté ✔"
-            await interaction.message.edit(view=self.view)
+        self.disabled = True
+        self.placeholder = "Objet acheté ✔"
+        await interaction.message.edit(view=self.view)
+
+class BoutiqueCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
 
     class BoutiqueView(discord.ui.View):
         def __init__(self):
             super().__init__(timeout=60)
-            self.add_item(BoutiqueCog.AchatSelect())
-            print("Line 74")
+            self.add_item(AchatSelect())
 
     @app_commands.command(name="boutique", description="Regarde la boutique")
     async def boutique(self, interaction: discord.Interaction):
-        print("Line 78")
         await interaction.response.defer()
-        print("COMMANDE /boutique")
 
         embed = discord.Embed(
             title="🛍 Boutique",
@@ -138,24 +205,36 @@ class BoutiqueCog(commands.Cog):
         cursor = conn.cursor()
 
         try:
-            print("Line 81")
-            cursor.execute("SELECT name, price FROM shop")
+            cursor.execute("SELECT name, price, type, duration FROM shop")
             items = cursor.fetchall()
             conn.close()
         except sqlite3.OperationalError as e:
             print("ERREUR DE SQL !!! L'erreur est : ", e)
-        print("Line 94")
 
         if not items:
             embed.description = "❌ Boutique vide"
-            print("Line 98")
         else:
-            print("Line 100")
-            for name, price in items:
-                embed.add_field(name=name, value=f"{price} €", inline=False)
+            for name, price, type, duration in items:
+                if type == 1:
+                    type_str = "Rôle"
+                    if duration is not None:
+                        type_str += " temporaire"
+                    else:
+                        type_str += " permanent"
+                elif type == 2:
+                    type_str = "Objet d'inventaire"
+                elif type == 3:
+                    type_str = "XP"
+                else:
+                    type_str = "Inconnu"
 
-        await interaction.followup.send(embed=embed, view=BoutiqueCog.BoutiqueView())
-        print("Line 105")
+                desc = f" **Prix :** {price} €\n **Type :** {type_str}"
+                if duration is not None and type == 1:
+                    desc += f"\n **Durée :** {duration} jours"
+
+                embed.add_field(name=name, value=desc, inline=False)
+
+        await interaction.followup.send(embed=embed, view=self.BoutiqueView())
 
 
 async def setup(bot):

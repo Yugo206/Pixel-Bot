@@ -219,7 +219,7 @@ class Warn(commands.Cog):
                     description="Cette commande est indisponible en MP en raison d'optimisation de mon code... Mais tu peut aller dans <@> pour cela !",
                     color=discord.Color.red()
                 )
-                await interaction.response.send_message(embed=embed)
+                await interaction.followup.send(embed=embed)
                 return
 
             print("line 24")
