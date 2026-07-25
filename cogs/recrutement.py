@@ -2,9 +2,9 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import os
-import sqlite3
+import aiomysql
 load_dotenv()
-from utils.setupdatabase import DB_PATH
+from utils.database import get_pool
 import time
 
 
@@ -55,11 +55,12 @@ class RaisonModal(discord.ui.Modal, title="Raison du refus"):
             pass
 
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM role_special WHERE user_id = ?", (membre.id,))
-                conn.commit()
-        except sqlite3.Error as e:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("DELETE FROM role_special WHERE user_id = %s", (membre.id,))
+                await conn.commit()
+        except aiomysql.Error as e:
             await interaction.followup.send(f"Erreur de base de donnée : {e}", ephemeral=True)
 
 
@@ -75,22 +76,23 @@ class Accepterview(discord.ui.View):
         await interaction.message.edit(view=self)
 
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT user_id FROM role_special WHERE message_accepter_id = ?",
-                               (interaction.message.id,))
-                row = cursor.fetchone()
-                if row is None:
-                    await interaction.followup.send("Candidature introuvable.")
-                    return
-                user_id = row[0]
-                guild = interaction.guild
-                membre = guild.get_member(user_id)
-                if membre is None:
-                    membre = await guild.fetch_member(user_id)
-                cursor.execute("DELETE FROM role_special WHERE user_id = ?", (user_id,))
-                conn.commit()
-        except sqlite3.OperationalError as e:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("SELECT user_id FROM role_special WHERE message_accepter_id = %s",
+                                   (interaction.message.id,))
+                    row = await cursor.fetchone()
+                    if row is None:
+                        await interaction.followup.send("Candidature introuvable.")
+                        return
+                    user_id = row[0]
+                    guild = interaction.guild
+                    membre = guild.get_member(user_id)
+                    if membre is None:
+                        membre = await guild.fetch_member(user_id)
+                    await cursor.execute("DELETE FROM role_special WHERE user_id = %s", (user_id,))
+                await conn.commit()
+        except aiomysql.Error as e:
             await interaction.followup.send(f"Erreur de base de donnée : {e}")
             return
         except discord.NotFound:
@@ -118,24 +120,26 @@ class Accepterview(discord.ui.View):
             except discord.Forbidden:
                 await interaction.followup.send(f"❌ Impossible d'ajouter le rôle à {membre.mention} (permissions insuffisantes).")
 
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            time_end = int(time.time()) + 7 * 24 * 3600
-            cursor.execute(
-                "INSERT INTO role_temp (user_id, role_id, end_time) VALUES (?, ?, ?)",
-                (user_id, role.id if role else role_id, int(time_end))
-            )
-            conn.commit()
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                time_end = int(time.time()) + 7 * 24 * 3600
+                await cursor.execute(
+                    "INSERT INTO role_temp (user_id, role_id, end_time) VALUES (%s, %s, %s)",
+                    (user_id, role.id if role else role_id, int(time_end))
+                )
+            await conn.commit()
 
         await interaction.followup.send(f"La candidature de {membre.mention} vient d'être acceptée par {interaction.user.mention} ✅")
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, emoji="❌", custom_id="recrutement:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT user_id FROM role_special WHERE message_accepter_id = ?", (interaction.message.id,))
-                row = cursor.fetchone()
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("SELECT user_id FROM role_special WHERE message_accepter_id = %s", (interaction.message.id,))
+                    row = await cursor.fetchone()
 
             if row is None:
                 await interaction.response.send_message("Candidature introuvable.", ephemeral=True)
@@ -145,7 +149,7 @@ class Accepterview(discord.ui.View):
             membre = interaction.guild.get_member(user_id)
             if membre is None:
                 membre = await interaction.guild.fetch_member(user_id)
-        except sqlite3.Error as e:
+        except aiomysql.Error as e:
             await interaction.response.send_message(f"Erreur : {e}", ephemeral=True)
             return
         except discord.NotFound:
@@ -186,13 +190,14 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
             msg = await channel.send(embed=embed, view=Accepterview())
 
             # DB
-            with sqlite3.connect(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute(
-                    "INSERT INTO role_special (user_id, status, message_accepter_id) VALUES (?, ?, ?)",
-                    (interaction.user.id, 1, msg.id)
-                )
-                conn.commit()
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "INSERT INTO role_special (user_id, status, message_accepter_id) VALUES (%s, %s, %s)",
+                        (interaction.user.id, 1, msg.id)
+                    )
+                await conn.commit()
 
 
         except Exception as e:
@@ -220,11 +225,12 @@ class ConditionsSelect(discord.ui.View):
     async def commencer(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT status FROM role_special WHERE user_id = ?", (interaction.user.id,))
-                row = cur.fetchone()
-        except sqlite3.Error as e:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT status FROM role_special WHERE user_id = %s", (interaction.user.id,))
+                    row = await cur.fetchone()
+        except aiomysql.Error as e:
             await interaction.followup.send(f"Erreur de base de donnée : {e}", ephemeral=True)
             return
 
@@ -249,11 +255,12 @@ class ConditionsSelect(discord.ui.View):
 
         # 3. Vérifie les avertissements (max 3)
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT COUNT(*) FROM warns WHERE user_id = ?", (interaction.user.id,))
-                warn_count = cur.fetchone()[0]
-        except sqlite3.Error:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT COUNT(*) FROM warns WHERE user_id = %s", (interaction.user.id,))
+                    warn_count = (await cur.fetchone())[0]
+        except aiomysql.Error:
             await interaction.followup.send("Erreur lors de la vérification des avertissements.", ephemeral=True)
             return
 

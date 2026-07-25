@@ -1,6 +1,6 @@
 import time
 from discord.ext import commands
-import sqlite3
+import aiomysql
 import random
 import os
 import discord
@@ -13,7 +13,7 @@ from cogs.recrutement import ConditionsSelect, FormulaireBouton
 from dotenv import load_dotenv
 load_dotenv()
 
-from utils.setupdatabase import DB_PATH
+from utils.database import get_pool
 
 MENTION_RESPONSES = [
     "Salut, moi c'est Pixel Bot!",
@@ -83,11 +83,12 @@ class Events(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cursor = conn.cursor()
-                cursor.execute("DELETE FROM utilisateurs WHERE user_id = ?", (member.id,))
-                conn.commit()
-        except sqlite3.OperationalError as e:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("DELETE FROM utilisateurs WHERE user_id = %s", (member.id,))
+                await conn.commit()
+        except aiomysql.Error as e:
             channel_id = os.getenv("CHANNEL_COMMANDE_ID")
             if not channel_id:
                 print(f"Erreur de base de donnée quand **{member.id}** a quitté le serveur : {e}")
@@ -106,61 +107,61 @@ class Events(commands.Cog):
         if message.guild is not None and self.bot.user in message.mentions:
             await message.reply(random.choice(MENTION_RESPONSES), mention_author=False)
 
+        pool = get_pool()
+
         if message.channel.type == discord.ChannelType.private_thread:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                cur.execute("SELECT membre_id FROM ticket WHERE thread_id = ?", (message.channel.id,))
-                rppw = cur.fetchone()
-                if rppw is not None and message.author.id == rppw[0]:
-                    cur.execute(
-                        "UPDATE ticket SET last_message = ? WHERE thread_id = ?",
-                        (time.time(), message.channel.id)
-                    )
-                    cur.execute("SELECT warn_12h FROM ticket WHERE thread_id = ?", (message.channel.id,))
-                    row = cur.fetchone()
-                    if row is not None and row[0] is not None:
-                        cur.execute(
-                            "UPDATE ticket SET warn_12h = NULL WHERE thread_id = ?",
-                            (message.channel.id,)
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT membre_id FROM ticket WHERE thread_id = %s", (message.channel.id,))
+                    rppw = await cur.fetchone()
+                    if rppw is not None and message.author.id == rppw[0]:
+                        await cur.execute(
+                            "UPDATE ticket SET last_message = %s WHERE thread_id = %s",
+                            (int(time.time()), message.channel.id)
                         )
-                    conn.commit()
+                        await cur.execute("SELECT warn_12h FROM ticket WHERE thread_id = %s", (message.channel.id,))
+                        row = await cur.fetchone()
+                        if row is not None and row[0] is not None:
+                            await cur.execute(
+                                "UPDATE ticket SET warn_12h = NULL WHERE thread_id = %s",
+                                (message.channel.id,)
+                            )
+                await conn.commit()
 
         # L'économie (argent/XP) ne s'applique qu'aux messages envoyés sur le serveur.
         if message.guild is not None:
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-
-            cursor.execute(
-                "INSERT OR IGNORE INTO utilisateurs (user_id, xp) VALUES (?, 40)",
-                (message.author.id,)
-            )
-
-            cursor.execute("SELECT xp FROM utilisateurs WHERE user_id = ?", (message.author.id,))
-            xp_actuel = cursor.fetchone()[0]
-
-            level_avant = self.get_level(xp_actuel)
-
-            xp_gain = random.randint(1, 10)
-            argent_gain = random.randint(5, 15)
-
-            xp_apres = xp_actuel + xp_gain
-            level_apres = self.get_level(xp_apres)
-
-            if level_apres > level_avant:
-                channel_id = os.getenv("CHANNEL_COMMANDE_ID")
-                channel = message.guild.get_channel(int(channel_id)) if channel_id else None
-                if channel:
-                    await channel.send(
-                        f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute(
+                        "INSERT IGNORE INTO utilisateurs (user_id, xp) VALUES (%s, 40)",
+                        (message.author.id,)
                     )
 
-            cursor.execute(
-                "UPDATE utilisateurs SET xp = ?, argent = argent + ? WHERE user_id = ?",
-                (xp_apres, argent_gain, message.author.id)
-            )
+                    await cursor.execute("SELECT xp FROM utilisateurs WHERE user_id = %s", (message.author.id,))
+                    xp_actuel = (await cursor.fetchone())[0]
 
-            conn.commit()
-            conn.close()
+                    level_avant = self.get_level(xp_actuel)
+
+                    xp_gain = random.randint(1, 10)
+                    argent_gain = random.randint(5, 15)
+
+                    xp_apres = xp_actuel + xp_gain
+                    level_apres = self.get_level(xp_apres)
+
+                    if level_apres > level_avant:
+                        channel_id = os.getenv("CHANNEL_COMMANDE_ID")
+                        channel = message.guild.get_channel(int(channel_id)) if channel_id else None
+                        if channel:
+                            await channel.send(
+                                f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
+                            )
+
+                    await cursor.execute(
+                        "UPDATE utilisateurs SET xp = %s, argent = argent + %s WHERE user_id = %s",
+                        (xp_apres, argent_gain, message.author.id)
+                    )
+
+                await conn.commit()
 
         # IMPORTANT pour les commandes
         await self.bot.process_commands(message)

@@ -1,11 +1,10 @@
 import os
-import sqlite3
 import time
 from datetime import timedelta
 
 import discord
 
-from utils.setupdatabase import DB_PATH
+from utils.database import get_pool
 
 # Palier d'avertissements -> sanction appliquée.
 SANCTION_THRESHOLDS = {
@@ -92,13 +91,14 @@ async def apply_warn_sanction(guild, membre: discord.Member, channel, warn_count
                 await channel.send(f"❌ Impossible de bannir {membre.mention} : {e}")
             return
 
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute(
-                "INSERT INTO temp_bans (user_id, unban_at) VALUES (?, ?)",
-                (membre.id, unban_at)
-            )
-            conn.commit()
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as c:
+                await c.execute(
+                    "INSERT INTO temp_bans (user_id, unban_at) VALUES (%s, %s)",
+                    (membre.id, unban_at)
+                )
+            await conn.commit()
 
         if channel:
             await channel.send(f"🔨 {membre} banni pour **{sanction['label']}**.\nRaison : {reason}")

@@ -1,8 +1,7 @@
-import sqlite3
 import discord
 from discord import app_commands
 from discord.ext import commands
-from utils.setupdatabase import DB_PATH
+from utils.database import get_pool
 
 OWNER_ID = 1377571267108143194  # 🔒 TON ID
 
@@ -13,17 +12,23 @@ def split_message(text: str, limit: int = 1900):
     return [text[i:i+limit] for i in range(0, len(text), limit)]
 
 
-def get_tables():
-    with sqlite3.connect(DB_PATH) as db:
-        c = db.cursor()
-        c.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        return [r[0] for r in c.fetchall()]
+async def get_tables():
+    pool = get_pool()
+    async with pool.acquire() as db:
+        async with db.cursor() as c:
+            await c.execute("SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE()")
+            return [r[0] for r in await c.fetchall()]
 
-def get_columns(table: str):
-    with sqlite3.connect(DB_PATH) as db:
-        c = db.cursor()
-        c.execute(f"PRAGMA table_info({table})")
-        return [r[1] for r in c.fetchall()]
+async def get_columns(table: str):
+    pool = get_pool()
+    async with pool.acquire() as db:
+        async with db.cursor() as c:
+            await c.execute(
+                "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s",
+                (table,)
+            )
+            return [r[0] for r in await c.fetchall()]
 
 # ======================
 # COG
@@ -38,7 +43,7 @@ class DatabaseCog(commands.Cog):
     async def table_autocomplete(self, interaction: discord.Interaction, current: str):
         return [
             app_commands.Choice(name=t, value=t)
-            for t in get_tables()
+            for t in await get_tables()
             if current.lower() in t.lower()
         ][:25]
 
@@ -52,7 +57,7 @@ class DatabaseCog(commands.Cog):
 
         return [
             app_commands.Choice(name=c, value=c)
-            for c in get_columns(table)
+            for c in await get_columns(table)
             if current.lower() in c.lower()
         ][:25]
 
@@ -86,30 +91,30 @@ class DatabaseCog(commands.Cog):
             await interaction.response.send_message("❌ Accès refusé", ephemeral=True)
             return
 
-        if table not in get_tables():
+        if table not in await get_tables():
             await interaction.response.send_message("❌ Table invalide.", ephemeral=True)
             return
 
-        if column_filter and column_filter not in get_columns(table):
+        if column_filter and column_filter not in await get_columns(table):
             await interaction.response.send_message("❌ Colonne de filtre invalide.", ephemeral=True)
             return
 
-        with sqlite3.connect(DB_PATH) as db:
-            c = db.cursor()
+        pool = get_pool()
+        async with pool.acquire() as db:
+            async with db.cursor() as c:
+                # Requête dynamique (table/colonne validées ci-dessus contre le schéma réel)
+                if column_filter and filter_value:
+                    query = f"""
+                    SELECT * FROM {table}
+                    WHERE {column_filter} = %s
+                    """
+                    await c.execute(query, (filter_value,))
+                else:
+                    query = f"SELECT * FROM {table} LIMIT 20"
+                    await c.execute(query)
 
-            # Requête dynamique (table/colonne validées ci-dessus contre le schéma réel)
-            if column_filter and filter_value:
-                query = f"""
-                SELECT * FROM {table}
-                WHERE {column_filter} = ?
-                """
-                c.execute(query, (filter_value,))
-            else:
-                query = f"SELECT * FROM {table} LIMIT 20"
-                c.execute(query)
-
-            rows = c.fetchall()
-            columns = [desc[0] for desc in c.description]
+                rows = await c.fetchall()
+                columns = [desc[0] for desc in c.description]
 
         if not rows:
             await interaction.response.send_message(
@@ -172,67 +177,62 @@ class DatabaseCog(commands.Cog):
             await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
             return
 
-        if table not in get_tables():
+        if table not in await get_tables():
             await interaction.response.send_message("❌ Table invalide.", ephemeral=True)
             return
 
-        columns = get_columns(table)
+        columns = await get_columns(table)
         if column_set not in columns or column_where not in columns:
             await interaction.response.send_message("❌ Colonne invalide.", ephemeral=True)
             return
 
-        con = None
         try:
-            con = sqlite3.connect(DB_PATH)
-            cur = con.cursor()
+            pool = get_pool()
+            async with pool.acquire() as con:
+                async with con.cursor() as cur:
+                    if action == "Modifier":
+                        query = f"""
+                        UPDATE {table}
+                        SET {column_set} = %s
+                        WHERE {column_where} = %s
+                        """
+                        await cur.execute(query, (value_set, value_where))
+                        await con.commit()
 
-            if action == "Modifier":
-                query = f"""
-                UPDATE {table}
-                SET {column_set} = ?
-                WHERE {column_where} = ?
-                """
-                cur.execute(query, (value_set, value_where))
-                con.commit()
+                        await interaction.response.send_message(
+                            f"✅ {cur.rowcount} ligne(s) modifiée(s)\n"
+                            f"`{table}.{column_set}` ← `{value_set}`\n"
+                            f"Condition : `{column_where} = {value_where}`",
+                            ephemeral=True
+                        )
 
-                await interaction.response.send_message(
-                    f"✅ {cur.rowcount} ligne(s) modifiée(s)\n"
-                    f"`{table}.{column_set}` ← `{value_set}`\n"
-                    f"Condition : `{column_where} = {value_where}`",
-                    ephemeral=True
-                )
+                    elif action == "Ajouter":
+                        query = f"INSERT INTO {table} ({column_set}) VALUES (%s)"
+                        await cur.execute(query, (value_set,))
+                        await con.commit()
 
-            elif action == "Ajouter":
-                query = f"INSERT INTO {table} ({column_set}) VALUES (?)"
-                cur.execute(query, (value_set,))
-                con.commit()
+                        await interaction.response.send_message(
+                            f"✅ Ligne ajoutée dans `{table}`\n"
+                            f"`{column_set}` = `{value_set}`",
+                            ephemeral=True
+                        )
 
-                await interaction.response.send_message(
-                    f"✅ Ligne ajoutée dans `{table}`\n"
-                    f"`{column_set}` = `{value_set}`",
-                    ephemeral=True
-                )
+                    elif action == "Detruire":
+                        query = f"DELETE FROM {table} WHERE {column_where} = %s"
+                        await cur.execute(query, (value_where,))
+                        await con.commit()
 
-            elif action == "Detruire":
-                query = f"DELETE FROM {table} WHERE {column_where} = ?"
-                cur.execute(query, (value_where,))
-                con.commit()
+                        await interaction.response.send_message(
+                            f"🗑️ {cur.rowcount} ligne(s) supprimée(s)\n"
+                            f"Condition : `{column_where} = {value_where}`",
+                            ephemeral=True
+                        )
 
-                await interaction.response.send_message(
-                    f"🗑️ {cur.rowcount} ligne(s) supprimée(s)\n"
-                    f"Condition : `{column_where} = {value_where}`",
-                    ephemeral=True
-                )
-
-            else:
-                await interaction.response.send_message("❌ Action invalide.", ephemeral=True)
+                    else:
+                        await interaction.response.send_message("❌ Action invalide.", ephemeral=True)
 
         except Exception as e:
             await interaction.response.send_message(f"❌ Erreur SQL : {e}", ephemeral=True)
-
-        finally:
-            if con is not None:
-                con.close()
 
 
 async def setup(bot):

@@ -1,13 +1,13 @@
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-import sqlite3
+import aiomysql
 import os
 from datetime import datetime, timezone
 import time
 from dotenv import load_dotenv
 load_dotenv()
-from utils.setupdatabase import DB_PATH
+from utils.database import get_pool
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 
 
@@ -45,10 +45,11 @@ class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
         except discord.Forbidden:
             pass
 
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("DELETE FROM contestations WHERE message_id = ?", (self.message_id,))
-            conn.commit()
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as c:
+                await c.execute("DELETE FROM contestations WHERE message_id = %s", (self.message_id,))
+            await conn.commit()
 
 
 class RefuseroracceptercontestationView(discord.ui.View):
@@ -63,13 +64,14 @@ class RefuseroracceptercontestationView(discord.ui.View):
     @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="warn:accepter")
     async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT membre_id, warn_id FROM contestations WHERE message_id = ?",
-                    (interaction.message.id,)
-                )
-                row = cur.fetchone()
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT membre_id, warn_id FROM contestations WHERE message_id = %s",
+                        (interaction.message.id,)
+                    )
+                    row = await cur.fetchone()
 
             if row is None:
                 await interaction.response.send_message("❌ Contestation introuvable (déjà traitée ?).", ephemeral=True)
@@ -88,22 +90,21 @@ class RefuseroracceptercontestationView(discord.ui.View):
                 b.disabled = True
             await interaction.response.edit_message(view=self)
 
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute("SELECT warn FROM utilisateurs WHERE user_id = %s", (membre_id,))
+                    wrow = await cur.fetchone()
+                    warn_actuel = wrow[0] if wrow and wrow[0] is not None else 0
+                    warn_ap = max(warn_actuel - 1, 0)
 
-                cur.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (membre_id,))
-                wrow = cur.fetchone()
-                warn_actuel = wrow[0] if wrow and wrow[0] is not None else 0
-                warn_ap = max(warn_actuel - 1, 0)
+                    await cur.execute("UPDATE utilisateurs SET warn = %s WHERE user_id = %s", (warn_ap, membre_id))
 
-                cur.execute("UPDATE utilisateurs SET warn = ? WHERE user_id = ?", (warn_ap, membre_id))
+                    if warn_id is not None:
+                        await cur.execute("DELETE FROM warns WHERE id = %s", (warn_id,))
 
-                if warn_id is not None:
-                    cur.execute("DELETE FROM warns WHERE id = ?", (warn_id,))
+                    await cur.execute("DELETE FROM contestations WHERE message_id = %s", (interaction.message.id,))
 
-                cur.execute("DELETE FROM contestations WHERE message_id = ?", (interaction.message.id,))
-
-                conn.commit()
+                await conn.commit()
 
             if membre is not None:
                 embed = discord.Embed(
@@ -125,13 +126,14 @@ class RefuseroracceptercontestationView(discord.ui.View):
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            with sqlite3.connect(DB_PATH) as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "SELECT membre_id FROM contestations WHERE message_id = ?",
-                    (interaction.message.id,)
-                )
-                row = cur.fetchone()
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT membre_id FROM contestations WHERE message_id = %s",
+                        (interaction.message.id,)
+                    )
+                    row = await cur.fetchone()
 
             if row is None:
                 await interaction.response.send_message("❌ Contestation introuvable (déjà traitée ?).", ephemeral=True)
@@ -188,13 +190,14 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
         msg = await channel.send(embed=embed, view=RefuseroracceptercontestationView())
 
         warn_id = self.warn[0] if self.warn else None
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute(
-                "INSERT INTO contestations (message_id, membre_id, warn_id) VALUES (?, ?, ?)",
-                (msg.id, self.membre.id, warn_id)
-            )
-            conn.commit()
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as c:
+                await c.execute(
+                    "INSERT INTO contestations (message_id, membre_id, warn_id) VALUES (%s, %s, %s)",
+                    (msg.id, self.membre.id, warn_id)
+                )
+            await conn.commit()
 
 
 class ContestationView(discord.ui.View):
@@ -222,14 +225,15 @@ class Warn(commands.Cog):
     @tasks.loop(seconds=30)
     async def check_tempbans(self):
         now = int(time.time())
+        pool = get_pool()
 
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute(
-                "SELECT user_id FROM temp_bans WHERE unban_at <= ?",
-                (now,)
-            )
-            bans = c.fetchall()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as c:
+                await c.execute(
+                    "SELECT user_id FROM temp_bans WHERE unban_at <= %s",
+                    (now,)
+                )
+                bans = await c.fetchall()
 
         if not bans:
             return
@@ -245,13 +249,13 @@ class Warn(commands.Cog):
             except (discord.NotFound, discord.Forbidden):
                 pass
 
-            with sqlite3.connect(DB_PATH) as conn:
-                c = conn.cursor()
-                c.execute(
-                    "DELETE FROM temp_bans WHERE user_id = ?",
-                    (user_id,)
-                )
-                conn.commit()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "DELETE FROM temp_bans WHERE user_id = %s",
+                        (user_id,)
+                    )
+                await conn.commit()
 
     @check_tempbans.before_loop
     async def before_tempbans(self):
@@ -275,44 +279,45 @@ class Warn(commands.Cog):
         membre = user
 
         try:
-            with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
-                c = conn.cursor()
-                c.execute(
-                    "SELECT warn FROM utilisateurs WHERE user_id = ?",
-                    (membre.id,)
-                )
-                result = c.fetchone()
-
-                if result is None:
-                    warn_count = 1
-                    c.execute(
-                        "INSERT INTO utilisateurs (user_id, warn) VALUES (?, ?)",
-                        (membre.id, warn_count)
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "SELECT warn FROM utilisateurs WHERE user_id = %s",
+                        (membre.id,)
                     )
-                elif result[0] is None:
-                    warn_count = 1
-                    c.execute("UPDATE utilisateurs SET warn = 1 WHERE user_id = ?", (membre.id,))
-                else:
-                    warn_count = result[0] + 1
-                    c.execute(
-                        "UPDATE utilisateurs SET warn = ? WHERE user_id = ?",
-                        (warn_count, membre.id)
+                    result = await c.fetchone()
+
+                    if result is None:
+                        warn_count = 1
+                        await c.execute(
+                            "INSERT INTO utilisateurs (user_id, warn) VALUES (%s, %s)",
+                            (membre.id, warn_count)
+                        )
+                    elif result[0] is None:
+                        warn_count = 1
+                        await c.execute("UPDATE utilisateurs SET warn = 1 WHERE user_id = %s", (membre.id,))
+                    else:
+                        warn_count = result[0] + 1
+                        await c.execute(
+                            "UPDATE utilisateurs SET warn = %s WHERE user_id = %s",
+                            (warn_count, membre.id)
+                        )
+
+                    timestamp = int(time.time())
+                    iso_time = datetime.now(timezone.utc).isoformat()
+
+                    await c.execute(
+                        """
+                        INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (membre.id, modo.id, raison, timestamp, iso_time)
                     )
+                    warn_id = c.lastrowid
 
-                timestamp = int(time.time())
-                iso_time = datetime.now(timezone.utc).isoformat()
-
-                c.execute(
-                    """
-                    INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (membre.id, modo.id, raison, timestamp, iso_time)
-                )
-                warn_id = c.lastrowid
-
-                conn.commit()
-        except sqlite3.OperationalError as e:
+                await conn.commit()
+        except aiomysql.Error as e:
             print(e)
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return

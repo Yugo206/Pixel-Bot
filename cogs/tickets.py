@@ -1,4 +1,4 @@
-import sqlite3
+import aiomysql
 import time
 import discord
 from discord.ext import commands
@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from datetime import datetime, timedelta, timezone
 from cogs.warn import ContestationView
-from utils.setupdatabase import DB_PATH
+from utils.database import get_pool
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 
 
@@ -97,14 +97,15 @@ class ModoView(discord.ui.View):
     async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
-                c = conn.cursor()
-                c.execute(
-                    "SELECT thread_id, membre_id, message_ticket_id FROM ticket WHERE modo_message_id = ?",
-                    (interaction.message.id,)
-                )
-                result = c.fetchone()
-        except sqlite3.OperationalError as e:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "SELECT thread_id, membre_id, message_ticket_id FROM ticket WHERE modo_message_id = %s",
+                        (interaction.message.id,)
+                    )
+                    result = await c.fetchone()
+        except aiomysql.Error as e:
             print(e)
             await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme", ephemeral=True)
             return
@@ -140,13 +141,14 @@ class ModoView(discord.ui.View):
         await messs.delete()
 
         try:
-            with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
-                c = conn.cursor()
-                c.execute(
-                    "UPDATE ticket SET modo_id = ?, statut = ? WHERE thread_id = ?",
-                    (interaction.user.id, 2, thread_id))
-                conn.commit()
-        except sqlite3.OperationalError as e:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "UPDATE ticket SET modo_id = %s, statut = %s WHERE thread_id = %s",
+                        (interaction.user.id, 2, thread_id))
+                await conn.commit()
+        except aiomysql.Error as e:
             print(e)
 
 
@@ -170,11 +172,12 @@ class SatisfactionView(discord.ui.View):
         await interaction.response.defer()
 
         selected_value = select.values[0]
-        with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
-            c = conn.cursor()
-            c.execute("""SELECT membre_id FROM ticket WHERE thread_id = ?""",
-                      (interaction.channel.id,))
-            rpw = c.fetchone()
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as c:
+                await c.execute("SELECT membre_id FROM ticket WHERE thread_id = %s",
+                          (interaction.channel.id,))
+                rpw = await c.fetchone()
 
         if rpw is None:
             await interaction.followup.send("❌ Impossible de retrouver ce ticket en base de données.", ephemeral=True)
@@ -199,35 +202,35 @@ class SatisfactionView(discord.ui.View):
         warn_id = None
 
         try:
-            with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
-                c = conn.cursor()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute("SELECT warn FROM utilisateurs WHERE user_id = %s", (membre.id,))
+                    result = await c.fetchone()
 
-                c.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (membre.id,))
-                result = c.fetchone()
+                    iso_time = datetime.now(timezone.utc).isoformat()
 
-                iso_time = datetime.now(timezone.utc).isoformat()
+                    if result is None:
+                        await c.execute("INSERT INTO utilisateurs (user_id, warn) VALUES (%s, 1)", (membre.id,))
+                        warn_count = 1
+                    elif result[0] is None:
+                        await c.execute("UPDATE utilisateurs SET warn = 1 WHERE user_id = %s", (membre.id,))
+                        warn_count = 1
+                    else:
+                        warn_count = result[0] + 1
+                        await c.execute("UPDATE utilisateurs SET warn = %s WHERE user_id = %s", (warn_count, membre.id))
 
-                if result is None:
-                    c.execute("INSERT INTO utilisateurs (user_id, warn) VALUES (?, 1)", (membre.id,))
-                    warn_count = 1
-                elif result[0] is None:
-                    c.execute("UPDATE utilisateurs SET warn = 1 WHERE user_id = ?", (membre.id,))
-                    warn_count = 1
-                else:
-                    warn_count = result[0] + 1
-                    c.execute("UPDATE utilisateurs SET warn = ? WHERE user_id = ?", (warn_count, membre.id))
+                    await c.execute(
+                        "INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (%s, %s, %s, %s, %s)",
+                        (membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket",
+                         int(time.time()), iso_time)
+                    )
 
-                c.execute(
-                    "INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (?, ?, ?, ?, ?)",
-                    (membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket",
-                     int(time.time()), iso_time)
-                )
-                conn.commit()
+                    warn_id = c.lastrowid
 
-                warn_id = c.lastrowid
+                await conn.commit()
 
-        except sqlite3.OperationalError as e:
-            print(f"Erreur SQLite: {e}")
+        except aiomysql.Error as e:
+            print(f"Erreur SQL: {e}")
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
 
@@ -287,11 +290,12 @@ class FermerView(discord.ui.View):
     async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         thread = interaction.channel
-        with sqlite3.connect(DB_PATH) as conn:
-            c = conn.cursor()
-            c.execute("""SELECT raison, membre_id FROM ticket WHERE thread_id = ?""",
-                      (thread.id,))
-            content = c.fetchone()
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as c:
+                await c.execute("SELECT raison, membre_id FROM ticket WHERE thread_id = %s",
+                          (thread.id,))
+                content = await c.fetchone()
 
         if content is None or content[0] is None:
             await interaction.followup.send("Probleme DB")
@@ -325,14 +329,14 @@ class FermerView(discord.ui.View):
         await thread.edit(locked=True, archived=True)
 
         try:
-            with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
-                c = conn.cursor()
-                c.execute(
-                    "UPDATE ticket SET statut = 3, closed_at = ? WHERE thread_id = ?",
-                    (time.time(), thread.id)
-                )
-                conn.commit()
-        except sqlite3.OperationalError as e:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "UPDATE ticket SET statut = 3, closed_at = %s WHERE thread_id = %s",
+                        (int(time.time()), thread.id)
+                    )
+                await conn.commit()
+        except aiomysql.Error as e:
             print(e)
 
 
@@ -382,14 +386,15 @@ class TicketCreateView(discord.ui.View):
         await interaction.message.edit(view=TicketCreateView())
 
         try:
-            with sqlite3.connect(DB_PATH, timeout=10.0) as conn:
-                cur = conn.cursor()
-                cur.execute(
-                    "INSERT INTO ticket (thread_id, membre_id, statut, raison, modo_message_id, message_ticket_id) VALUES (?, ?, ?, ?, ?, ?)",
-                    (thread.id, interaction.user.id, 1, raison, messsages.id if messsages else None, message.id)
-                )
-                conn.commit()
-        except sqlite3.OperationalError as e:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "INSERT INTO ticket (thread_id, membre_id, statut, raison, modo_message_id, message_ticket_id) VALUES (%s, %s, %s, %s, %s, %s)",
+                        (thread.id, interaction.user.id, 1, raison, messsages.id if messsages else None, message.id)
+                    )
+                await conn.commit()
+        except aiomysql.Error as e:
             print(e)
 
         if raison == "Partenariat":
