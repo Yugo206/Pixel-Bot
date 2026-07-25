@@ -46,7 +46,7 @@ class DatabaseCog(commands.Cog):
     # AUTOCOMPLETE COLUMN
     # ======================
     async def column_autocomplete(self, interaction: discord.Interaction, current: str):
-        table = interaction.namespace.table
+        table = getattr(interaction.namespace, "table", None)
         if not table:
             return []
 
@@ -55,6 +55,14 @@ class DatabaseCog(commands.Cog):
             for c in get_columns(table)
             if current.lower() in c.lower()
         ][:25]
+
+    async def action_autocomplete(self, interaction: discord.Interaction, current: str):
+        actions = ["Modifier", "Ajouter", "Detruire"]
+        return [
+            app_commands.Choice(name=a, value=a)
+            for a in actions
+            if current.lower() in a.lower()
+        ]
 
     # ======================
     # 👀 VOIR
@@ -78,10 +86,18 @@ class DatabaseCog(commands.Cog):
             await interaction.response.send_message("❌ Accès refusé", ephemeral=True)
             return
 
+        if table not in get_tables():
+            await interaction.response.send_message("❌ Table invalide.", ephemeral=True)
+            return
+
+        if column_filter and column_filter not in get_columns(table):
+            await interaction.response.send_message("❌ Colonne de filtre invalide.", ephemeral=True)
+            return
+
         with sqlite3.connect(DB_PATH) as db:
             c = db.cursor()
 
-            # Requête dynamique
+            # Requête dynamique (table/colonne validées ci-dessus contre le schéma réel)
             if column_filter and filter_value:
                 query = f"""
                 SELECT * FROM {table}
@@ -133,35 +149,6 @@ class DatabaseCog(commands.Cog):
     # ======================
     # ✏️ MODIFIER
     # ======================
-    async def table_autocomplete(self, interaction: discord.Interaction, current: str):
-        return [
-            app_commands.Choice(name=t, value=t)
-            for t in get_tables()
-            if current.lower() in t.lower()
-        ][:25]
-
-    # ======================
-    # AUTOCOMPLETE COLUMN
-    # ======================
-    async def column_autocomplete(self, interaction: discord.Interaction, current: str):
-        table = getattr(interaction.namespace, "table", None)
-        if not table:
-            return []
-
-        return [
-            app_commands.Choice(name=c, value=c)
-            for c in get_columns(table)
-            if current.lower() in c.lower()
-        ][:25]
-
-    async def action_autocomplete(self, interaction: discord.Interaction, current: str):
-        actions = ["Modifier", "Ajouter", "Detruire"]
-        return [
-            app_commands.Choice(name=a, value=a)
-            for a in actions
-            if current.lower() in a.lower()
-        ]
-
     @app_commands.command(name="db_edit", description="Modifier la base de données")
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.autocomplete(
@@ -185,6 +172,16 @@ class DatabaseCog(commands.Cog):
             await interaction.response.send_message("❌ Accès refusé.", ephemeral=True)
             return
 
+        if table not in get_tables():
+            await interaction.response.send_message("❌ Table invalide.", ephemeral=True)
+            return
+
+        columns = get_columns(table)
+        if column_set not in columns or column_where not in columns:
+            await interaction.response.send_message("❌ Colonne invalide.", ephemeral=True)
+            return
+
+        con = None
         try:
             con = sqlite3.connect(DB_PATH)
             cur = con.cursor()
@@ -234,13 +231,9 @@ class DatabaseCog(commands.Cog):
             await interaction.response.send_message(f"❌ Erreur SQL : {e}", ephemeral=True)
 
         finally:
-            con.close()
+            if con is not None:
+                con.close()
 
 
 async def setup(bot):
     await bot.add_cog(DatabaseCog(bot))
-
-
-
-
-

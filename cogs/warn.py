@@ -3,12 +3,14 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import sqlite3
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import time
 from dotenv import load_dotenv
 load_dotenv()
-from discord.utils import utcnow
 from utils.setupdatabase import DB_PATH
+from utils.sanctions import apply_warn_sanction, get_modo_channel
+
+
 class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
     raison = discord.ui.TextInput(
         label="Raison du refus",
@@ -19,9 +21,10 @@ class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
         required=True
     )
 
-    def __init__(self, membre):
+    def __init__(self, membre, message_id):
         super().__init__()
         self.membre = membre
+        self.message_id = message_id
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.send_message(
@@ -41,49 +44,68 @@ class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
             await self.membre.send(embed=embed)
         except discord.Forbidden:
             pass
-        for b in self.children:
-            b.disabled = True
-        await interaction.message.edit(view=self)
+
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute("DELETE FROM contestations WHERE message_id = ?", (self.message_id,))
+            conn.commit()
 
 
-try:
-    class RefuseroracceptercontestationView(discord.ui.View):
-        def __init__(self, membre, bot, warn):
-            super().__init__(timeout=None)
-            self.membre = membre
-            self.bot = bot
-            self.warn = warn  # tuple (id, raison, created_at...)
+class RefuseroracceptercontestationView(discord.ui.View):
+    """Vue persistante et sans état : les infos de la contestation (membre, warn concerné)
+    sont retrouvées dans la table `contestations` à partir de l'id du message cliqué,
+    au lieu d'être stockées sur l'instance (ce qui casse dès qu'elle est enregistrée
+    globalement via bot.add_view)."""
 
-        @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="warn:accepter")
-        async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
-            try:
-                for b in self.children:
-                    b.disabled = True
-                await interaction.message.edit(view=self)
-                conn = sqlite3.connect(DB_PATH)
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="warn:accepter")
+    async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
-
                 cur.execute(
-                    "SELECT warn FROM utilisateurs WHERE user_id = ?",
-                    (self.membre.id,)
+                    "SELECT membre_id, warn_id FROM contestations WHERE message_id = ?",
+                    (interaction.message.id,)
                 )
                 row = cur.fetchone()
-                warn_actuel = row[0] if row else 0
+
+            if row is None:
+                await interaction.response.send_message("❌ Contestation introuvable (déjà traitée ?).", ephemeral=True)
+                return
+
+            membre_id, warn_id = row
+            guild = interaction.guild
+            membre = guild.get_member(membre_id)
+            if membre is None:
+                try:
+                    membre = await guild.fetch_member(membre_id)
+                except discord.NotFound:
+                    membre = None
+
+            for b in self.children:
+                b.disabled = True
+            await interaction.response.edit_message(view=self)
+
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+
+                cur.execute("SELECT warn FROM utilisateurs WHERE user_id = ?", (membre_id,))
+                wrow = cur.fetchone()
+                warn_actuel = wrow[0] if wrow and wrow[0] is not None else 0
                 warn_ap = max(warn_actuel - 1, 0)
 
-                cur.execute(
-                    "UPDATE utilisateurs SET warn = ? WHERE user_id = ?",
-                    (warn_ap, self.membre.id)
-                )
+                cur.execute("UPDATE utilisateurs SET warn = ? WHERE user_id = ?", (warn_ap, membre_id))
 
-                cur.execute(
-                    "DELETE FROM warns WHERE id = ?",
-                    (self.warn[0],)
-                )
+                if warn_id is not None:
+                    cur.execute("DELETE FROM warns WHERE id = ?", (warn_id,))
+
+                cur.execute("DELETE FROM contestations WHERE message_id = ?", (interaction.message.id,))
 
                 conn.commit()
-                conn.close()
 
+            if membre is not None:
                 embed = discord.Embed(
                     title="Contestation acceptée",
                     description="Ton warn a été retiré",
@@ -92,31 +114,48 @@ try:
                 embed.add_field(name="Modérateur :", value=interaction.user.mention, inline=False)
 
                 try:
-                    await self.membre.send(embed=embed)
+                    await membre.send(embed=embed)
                 except discord.Forbidden:
                     pass
 
-                await interaction.response.send_message("Sanction retirée ✅", ephemeral=True)
+            await interaction.followup.send("Sanction retirée ✅", ephemeral=True)
+        except Exception as e:
+            print(f"[warn:accepter] {e}")
 
-                for b in self.children:
-                    b.disabled = True
-                await interaction.message.edit(view=self)
-            except Exception as e:
-                print(e)
+    @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
+    async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT membre_id FROM contestations WHERE message_id = ?",
+                    (interaction.message.id,)
+                )
+                row = cur.fetchone()
 
-            @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
-            async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
-                await interaction.response.send_modal(RaisonrefuserModal(self.membre))
-                for child in self.children:
-                    child.disabled = True
-                await interaction.message.edit(view=self)
+            if row is None:
+                await interaction.response.send_message("❌ Contestation introuvable (déjà traitée ?).", ephemeral=True)
+                return
 
+            membre_id = row[0]
+            guild = interaction.guild
+            membre = guild.get_member(membre_id)
+            if membre is None:
+                try:
+                    membre = await guild.fetch_member(membre_id)
+                except discord.NotFound:
+                    membre = None
 
-except Exception as e:
-    print(e)
+            if membre is None:
+                await interaction.response.send_message("❌ Ce membre n'est plus sur le serveur.", ephemeral=True)
+                return
 
-
-
+            await interaction.response.send_modal(RaisonrefuserModal(membre, interaction.message.id))
+            for child in self.children:
+                child.disabled = True
+            await interaction.message.edit(view=self)
+        except Exception as e:
+            print(f"[warn:refuser] {e}")
 
 
 class ContestationModal(discord.ui.Modal, title="Contestation"):
@@ -128,18 +167,35 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
         label="Explique pourquoi tu trouve ce warn injuste",
         required=True
     )
-    def __init__ (self, bot, membre, warn):
+
+    def __init__(self, bot, membre, warn):
         super().__init__()
         self.bot = bot
         self.membre = membre
-        self.warn = warn
+        self.warn = warn  # tuple (id, raison, created_at) ou None
+
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Merci, tu recevera une réponse dans les prochaines 24h")
-        channel = self.bot.get_channel(os.getenv("CHANNEL_MODO_ID"))
+        await interaction.response.send_message("Merci, tu recevera une réponse dans les prochaines 24h", ephemeral=True)
+
+        channel = await get_modo_channel(self.bot)
+        if channel is None:
+            return
+
         embed = discord.Embed(title="Contestation", color=discord.Color.green(), description="Nouvelle contestation !")
         embed.add_field(name="Membre :", value=interaction.user.mention, inline=False)
-        embed.add_field(name="Raison : ", value= self.raison.value, inline=False)
-        await channel.send(embed=embed, view=RefuseroracceptercontestationView(self.membre, self.bot, self.warn))
+        embed.add_field(name="Raison : ", value=self.raison.value, inline=False)
+
+        msg = await channel.send(embed=embed, view=RefuseroracceptercontestationView())
+
+        warn_id = self.warn[0] if self.warn else None
+        with sqlite3.connect(DB_PATH) as conn:
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO contestations (message_id, membre_id, warn_id) VALUES (?, ?, ?)",
+                (msg.id, self.membre.id, warn_id)
+            )
+            conn.commit()
+
 
 class ContestationView(discord.ui.View):
     def __init__(self, membre, bot, warn):
@@ -147,24 +203,18 @@ class ContestationView(discord.ui.View):
         self.membre = membre
         self.bot = bot
         self.warn = warn
-        
 
     @discord.ui.button(label="Contestation", style=discord.ButtonStyle.red, custom_id="contest", emoji="❌")
     async def contest(self, interaction: discord.Interaction, button: discord.ui.Button):
-        membre = self.membre
         await interaction.response.send_modal(ContestationModal(self.bot, self.membre, self.warn))
         button.disabled = True
         await interaction.message.edit(view=self)
-
-
-
 
 
 class Warn(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.check_tempbans.start()
-        bot.add_view(RefuseroracceptercontestationView(None, self.bot, None))
 
     def cog_unload(self):
         self.check_tempbans.cancel()
@@ -210,198 +260,89 @@ class Warn(commands.Cog):
     @app_commands.command(name="warn", description="Averti un membre")
     @app_commands.checks.has_permissions(manage_messages=True)
     async def warn(self, interaction: discord.Interaction, user: discord.Member, raison: str):
-        if interaction.user.guild_permissions.manage_messages:
-            await interaction.response.defer(ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
 
-            if interaction.guild is None:
-                embed = discord.Embed(
-                    title="Les messages privées...",
-                    description="Cette commande est indisponible en MP en raison d'optimisation de mon code... Mais tu peut aller dans <@> pour cela !",
-                    color=discord.Color.red()
+        if interaction.guild is None:
+            embed = discord.Embed(
+                title="Les messages privées...",
+                description="Cette commande est indisponible en MP en raison d'optimisation de mon code... Mais tu peut aller dans <@> pour cela !",
+                color=discord.Color.red()
+            )
+            await interaction.followup.send(embed=embed)
+            return
+
+        modo = interaction.user
+        membre = user
+
+        try:
+            with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
+                c = conn.cursor()
+                c.execute(
+                    "SELECT warn FROM utilisateurs WHERE user_id = ?",
+                    (membre.id,)
                 )
-                await interaction.followup.send(embed=embed)
-                return
+                result = c.fetchone()
 
-            print("line 24")
-            modo = interaction.user
-            membre = user
-
-            try:
-                with sqlite3.connect(DB_PATH, timeout=5.0) as conn:
-                    c = conn.cursor()
+                if result is None:
+                    warn_count = 1
                     c.execute(
-                        "SELECT warn FROM utilisateurs WHERE user_id = ?",
-                        (membre.id,)
+                        "INSERT INTO utilisateurs (user_id, warn) VALUES (?, ?)",
+                        (membre.id, warn_count)
                     )
-                    result = c.fetchone()
-                    print(result)
+                elif result[0] is None:
+                    warn_count = 1
+                    c.execute("UPDATE utilisateurs SET warn = 1 WHERE user_id = ?", (membre.id,))
+                else:
+                    warn_count = result[0] + 1
+                    c.execute(
+                        "UPDATE utilisateurs SET warn = ? WHERE user_id = ?",
+                        (warn_count, membre.id)
+                    )
 
-                    if result is None:
-                        warn_count = 1
-                        c.execute(
-                            "INSERT INTO utilisateurs (user_id, warn) VALUES (?, ?)",
-                            (membre.id, warn_count)
-                        )
-                        conn.commit()
+                timestamp = int(time.time())
+                iso_time = datetime.now(timezone.utc).isoformat()
 
-                        timestamp = int(time.time())
-                        iso_time = datetime.now(timezone.utc).isoformat()
-
-                        c.execute(
-                            """
-                            INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso)
-                            VALUES (?, ?, ?, ?, ?)
-                            """,
-                            (user.id, modo.id, raison, timestamp, iso_time)
-                        )
-                        conn.commit()
-                    else:
-                        print("line 52")
-                        try:
-                            warn_count = result[0] + 1
-                            c.execute(
-                                "UPDATE utilisateurs SET warn = ? WHERE user_id = ?",
-                                (warn_count, membre.id)
-                            )
-                            print("line 58")
-
-                            timestamp = int(time.time())
-                            iso_time = datetime.now(timezone.utc).isoformat()
-
-                            c.execute(
-                                """
-                                INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso)
-                                VALUES (?, ?, ?, ?, ?)
-                                """,
-                                (user.id, modo.id, raison, timestamp, iso_time)
-                            )
-                            conn.commit()
-                            print("line 59")
-                        except Exception as e:
-                            print(e)
-            except Exception as e:
-                print(e)
-
-            try:
-                warn_count = result[0] + 1
-
-                if warn_count == 3 or warn_count == 5 or warn_count == 10:
-                    if warn_count == 3:
-                        duration = 172800
-                        until = utcnow() + timedelta(hours=48)
-                        channel = interaction.guild.get_channel(os.getenv("CHANNEL_MODO_ID"))
-
-                        try:
-                            await membre.timeout(until, reason="3 avertissements")
-                        except discord.Forbidden:
-                            await channel.send(
-                                f"Erreur lors du mute de {membre.mention} car il n'est pas ici !"
-                            )
-                        except discord.HTTPException as e:
-                            await channel.send(
-                                f"Impossible de mute {membre.mention} : {e}"
-                            )
-
-                        embed = discord.Embed(
-                            title="Tu viens d'être mute",
-                            description="Tu as reçu 3 avertissements, tu viens donc d'etre mute 48h sur **Pixel Partie**. Prends le temps de reflechir pendant ton mute, ça evitera le ban 😆"
-                        )
-                        try:
-                            await membre.send(embed=embed)
-                        except discord.Forbidden:
-                            pass
-
-                    elif warn_count == 5:
-                        duration = 0.001
-                        until = utcnow() + timedelta(days=7)
-                        channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
-
-                        try:
-                            await membre.timeout(until, reason="5 avertissements")
-                        except discord.Forbidden:
-                            await channel.send(
-                                f"Erreur lors du mute de {membre.mention} car il n'est pas ici !"
-                            )
-                        except discord.HTTPException as e:
-                            await channel.send(
-                                f"Impossible de mute {membre.mention} : {e}"
-                            )
-
-                        embed = discord.Embed(
-                            title="Tu viens d'être mute",
-                            description="Tu as reçu 5 avertissements, tu viens donc d'etre mute 7 Jours sur **Pixel Partie**. Prends le temps de reflechir pendant ton mute, ça evitera le ban 😆"
-                        )
-                        try:
-                            await membre.send(embed=embed)
-                        except discord.Forbidden:
-                            pass
-
-                    elif warn_count == 10:
-                        duration = 0.001
-
-                        embed3 = discord.Embed(
-                            title="Tu viens d'etre ban",
-                            description="Tu a reçu 10 avertissement, donc tu viens d'etre banni de Pixel Party."
-                        )
-                        embed3.add_field(name="Raison : ", value="10 avertissements", inline=False)
-                        embed3.add_field(name="Moderateur : ", value=interaction.user.mention, inline=False)
-
-                        try:
-                            await membre.send(embed=embed3)
-                        except discord.Forbidden:
-                            print(f"Impossible de ban {membre.name}")
-
-                        channel = interaction.guild.get_channel(int(os.getenv("CHANNEL_MODO_ID")))
-                        unban_at = int(time.time()) + duration * 86400
-
-                        await interaction.guild.ban(membre, reason="10 avertissements")
-
-                        with sqlite3.connect(DB_PATH) as conn:
-                            c = conn.cursor()
-                            c.execute(
-                                "INSERT INTO temp_bans (user_id, unban_at) VALUES (?, ?)",
-                                (membre.id, unban_at)
-                            )
-                            conn.commit()
-
-                        await channel.send(
-                            f"🔨 {membre.mention} banni pour **30 jour(s)**.\nRaison : 10 avertissements"
-                        )
-
-                await interaction.followup.send(
-                    "Le membre viens d'etre averti en MP, merci !",
-                    ephemeral=True
+                c.execute(
+                    """
+                    INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (membre.id, modo.id, raison, timestamp, iso_time)
                 )
-                conn = sqlite3.connect(DB_PATH)
-                cur = conn.cursor()
-                cur.execute(" SELECT id, raison, created_at FROM warns WHERE user_id = ? ORDER BY created_at DESC LIMIT 1", (user.id,))
-                warnes = cur.fetchone()
-                conn.close()
+                warn_id = c.lastrowid
 
-                embed = discord.Embed(
-                    title="Tu viens d'etre avertit",
-                    description="Tu t'est mal comporté sur Pixel Party donc un avertissement vient de tomber",
-                    color=discord.Color.red()
-                )
-                embed.add_field(name="Moderateur : ", value=modo.mention, inline=False)
-                embed.add_field(name="Raison : ", value=raison, inline=False)
-                embed.add_field(
-                    name="C'est une erreur ?",
-                    value="Clique sur le boutton ci-dessous pour contester ta sanction"
-                )
-                embed.set_footer(text=f"ID du warn : {warnes[0]}")
+                conn.commit()
+        except sqlite3.OperationalError as e:
+            print(e)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+            return
 
-                try:
-                    await membre.send(embed=embed, view=ContestationView(user, self.bot, warnes))
-                except discord.Forbidden:
-                    pass
+        channel = await get_modo_channel(self.bot, interaction.guild)
+        await apply_warn_sanction(interaction.guild, membre, channel, warn_count)
 
-            except Exception as e:
-                print(e)
-        else:
-            await interaction.response.send_message("Tu n'a pas l'autorisation pour cette commande")
+        await interaction.followup.send(
+            "Le membre viens d'etre averti en MP, merci !",
+            ephemeral=True
+        )
+
+        embed = discord.Embed(
+            title="Tu viens d'etre avertit",
+            description="Tu t'est mal comporté sur Pixel Party donc un avertissement vient de tomber",
+            color=discord.Color.red()
+        )
+        embed.add_field(name="Moderateur : ", value=modo.mention, inline=False)
+        embed.add_field(name="Raison : ", value=raison, inline=False)
+        embed.add_field(
+            name="C'est une erreur ?",
+            value="Clique sur le boutton ci-dessous pour contester ta sanction"
+        )
+        embed.set_footer(text=f"ID du warn : {warn_id}")
+
+        try:
+            await membre.send(embed=embed, view=ContestationView(membre, self.bot, (warn_id, raison, timestamp)))
+        except discord.Forbidden:
+            pass
 
 
 async def setup(bot):
     await bot.add_cog(Warn(bot))
-

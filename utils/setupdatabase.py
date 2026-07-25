@@ -58,7 +58,7 @@ TABLES = {
         "membre_id INTEGER NOT NULL",
         "modo_id INTEGER",
         "statut INTEGER NOT NULL",
-        "raison INTEGER NOT NULL",
+        "raison TEXT NOT NULL",
         "last_message INTEGER",
         "warn_12h INTEGER",
         "closed_at INTEGER",
@@ -68,8 +68,9 @@ TABLES = {
     "role_special": [
         "id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT",
         "user_id INTEGER NOT NULL",
-        "role_id INTEGER NOT NULL",
+        "role_id INTEGER",
         "status INTEGER NOT NULL DEFAULT 0",
+        "message_accepter_id INTEGER",
     ],
 
     "warns": [
@@ -79,6 +80,21 @@ TABLES = {
         "raison TEXT",
         "created_at INTEGER",
         "created_at_iso TEXT"
+    ],
+
+    "contestations": [
+        "message_id INTEGER PRIMARY KEY",
+        "membre_id INTEGER NOT NULL",
+        "warn_id INTEGER",
+        "warn_raison TEXT",
+        "warn_created_at INTEGER",
+    ],
+
+    "shop_temp_roles": [
+        "id INTEGER PRIMARY KEY AUTOINCREMENT",
+        "user_id INTEGER NOT NULL",
+        "role_id INTEGER NOT NULL",
+        "end_time INTEGER NOT NULL",
     ],
 }
 

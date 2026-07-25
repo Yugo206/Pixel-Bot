@@ -6,11 +6,40 @@ import os
 import discord
 from cogs.setupticket import TicketCreateView
 from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView
+from cogs.trade import TradeView
+from cogs.visite import VisiteGuidee
+from cogs.warn import RefuseroracceptercontestationView
+from cogs.recrutement import ConditionsSelect, FormulaireBouton
 from dotenv import load_dotenv
 load_dotenv()
-from cogs.recrutement import ConditionsSelect, FormulaireBouton
 
 from utils.setupdatabase import DB_PATH
+
+MENTION_RESPONSES = [
+    "Salut, moi c'est Pixel Bot!",
+    "Quelqu’un m’a mentionné ici ?",
+    "Pixel Bot, toujours prêt à vous répondre !",
+    "Hello ! Je suis Pixel Bot.",
+    "Salut ! Comment puis-je vous aider ?",
+    "Je suis Pixel Bot, votre bot Discord.",
+    "Mentionnez-moi quand vous voulez !",
+    "Pixel Bot est en ligne et prêt à répondre.",
+    "Salut ! Je suis Pixel Bot, votre assistant Discord.",
+    "Je suis là pour vous aider. Mentionnez-moi !",
+    "Pixel Bot a détecté une mention ! Comment puis-je vous aider ?",
+    "Salut, je suis Pixel Bot. Que puis-je faire pour vous?",
+    "Je suis Pixel Bot, votre bot Discord personnel.",
+    "Mentionnez-moi et je réponds !",
+    "Pixel Bot est actif. Dites-moi ce que vous voulez.",
+    "Salut ! Je suis Pixel Bot, prêt à répondre à vos questions.",
+    "Je suis Pixel Bot. Comment puis-je vous aider aujourd'hui ?",
+    "Pixel Bot a été mentionné ! Je suis prêt à répondre.",
+    "Salut, je suis Pixel Bot. Dites-moi ce dont vous avez besoin !",
+    "Pixel Bot est en ligne et prêt à vous aider. Mentionnez-moi !"
+]
+
+BLACKLIST = [1322202659461271623]
+
 
 class Events(commands.Cog):
     def __init__(self, bot):
@@ -39,137 +68,112 @@ class Events(commands.Cog):
             self.bot.add_view(ConditionsPartenariatView())
             self.bot.add_view(MentionPartenariatView())
             self.bot.add_view(SatisfactionView())
-            self.bot.add_view(ConditionsPartenariatView())
             self.bot.add_view(ConditionsSelect())
             self.bot.add_view(FormulaireBouton())
+            self.bot.add_view(TradeView())
+            self.bot.add_view(RefuseroracceptercontestationView())
+            # Les custom_id des boutons de VisiteGuidee dépendent de l'étape :
+            # on enregistre les 3 configurations possibles pour couvrir tous les boutons.
+            self.bot.add_view(VisiteGuidee(1))
+            self.bot.add_view(VisiteGuidee(2))
+            self.bot.add_view(VisiteGuidee(5))
         except Exception as e:
             print(e)
 
-    @commands.Cog.listener()
-    async def on_member_mention(self, member):
-        responses = [
-            "Salut, moi c'est Pixel Bot!",
-            "Quelqu’un m’a mentionné ici ?",
-            "Pixel Bot, toujours prêt à vous répondre !",
-            "Hello ! Je suis Pixel Bot.",
-            "Salut ! Comment puis-je vous aider ?",
-            "Je suis Pixel Bot, votre bot Discord.",
-            "Mentionnez-moi quand vous voulez !",
-            "Pixel Bot est en ligne et prêt à répondre.",
-            "Salut ! Je suis Pixel Bot, votre assistant Discord.",
-            "Je suis là pour vous aider. Mentionnez-moi !",
-            "Pixel Bot a détecté une mention ! Comment puis-je vous aider ?",
-            "Salut, je suis Pixel Bot. Que puis-je faire pour vous?",
-            "Je suis Pixel Bot, votre bot Discord personnel.",
-            "Mentionnez-moi et je réponds !",
-            "Pixel Bot est actif. Dites-moi ce que vous voulez.",
-            "Salut ! Je suis Pixel Bot, prêt à répondre à vos questions.",
-            "Je suis Pixel Bot. Comment puis-je vous aider aujourd'hui ?",
-            "Pixel Bot a été mentionné ! Je suis prêt à répondre.",
-            "Salut, je suis Pixel Bot. Dites-moi ce dont vous avez besoin !",
-            "Pixel Bot est en ligne et prêt à vous aider. Mentionnez-moi !"
-        ]
-        response = random.choice(responses)
-        await member.send(response)
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         try:
             with sqlite3.connect(DB_PATH) as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                DELETE FROM utilisateurs WHERE user_id = ?
-                """, (member.id,))
+                cursor.execute("DELETE FROM utilisateurs WHERE user_id = ?", (member.id,))
                 conn.commit()
         except sqlite3.OperationalError as e:
+            channel_id = os.getenv("CHANNEL_COMMANDE_ID")
+            if not channel_id:
+                print(f"Erreur de base de donnée quand **{member.id}** a quitté le serveur : {e}")
+                return
             guild = member.guild
-            channel = guild.get_channel(int(os.getenv("CHANNEL_COMMANDER_ID")))
-            await channel.send(f"Erreur de base de donnée quand **{member.id}** as quitté le serveur : {e}")
+            channel = guild.get_channel(int(channel_id))
+            if channel:
+                await channel.send(f"Erreur de base de donnée quand **{member.id}** a quitté le serveur : {e}")
+
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
             return
 
+        # Réagit quand le bot est mentionné dans un salon du serveur.
+        if message.guild is not None and self.bot.user in message.mentions:
+            await message.reply(random.choice(MENTION_RESPONSES), mention_author=False)
+
         if message.channel.type == discord.ChannelType.private_thread:
             with sqlite3.connect(DB_PATH) as conn:
                 cur = conn.cursor()
-                cur.execute("""SELECT membre_id FROM ticket WHERE thread_id = ?""", (message.channel.id,))
+                cur.execute("SELECT membre_id FROM ticket WHERE thread_id = ?", (message.channel.id,))
                 rppw = cur.fetchone()
-                if message.author.id == rppw[0]:
-                    cur.execute("UPDATE ticket SET last_message = ? WHERE thread_id = ?", (time.time(), message.channel.id))
-                    conn.commit()
+                if rppw is not None and message.author.id == rppw[0]:
+                    cur.execute(
+                        "UPDATE ticket SET last_message = ? WHERE thread_id = ?",
+                        (time.time(), message.channel.id)
+                    )
                     cur.execute("SELECT warn_12h FROM ticket WHERE thread_id = ?", (message.channel.id,))
                     row = cur.fetchone()
-                    if row[0] is None:
-                        return
-                    elif row[0] is not None:
-                        cur.execute("UPDATE ticket SET warn_12h = NULL WHERE thread_id = ?", (message.channel.id,))
-                        conn.commit()
+                    if row is not None and row[0] is not None:
+                        cur.execute(
+                            "UPDATE ticket SET warn_12h = NULL WHERE thread_id = ?",
+                            (message.channel.id,)
+                        )
+                    conn.commit()
 
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
+        # L'économie (argent/XP) ne s'applique qu'aux messages envoyés sur le serveur.
+        if message.guild is not None:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
 
-        # Table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS utilisateurs (
-            user_id INTEGER PRIMARY KEY,
-            argent INTEGER DEFAULT 0,
-            xp INTEGER DEFAULT 0
-        )
-        """)
+            cursor.execute(
+                "INSERT OR IGNORE INTO utilisateurs (user_id, xp) VALUES (?, 40)",
+                (message.author.id,)
+            )
 
-        # User
-        cursor.execute(
-            "INSERT OR IGNORE INTO utilisateurs (user_id, xp) VALUES (?, 40)",
-            (message.author.id,)
-        )
+            cursor.execute("SELECT xp FROM utilisateurs WHERE user_id = ?", (message.author.id,))
+            xp_actuel = cursor.fetchone()[0]
 
-        # XP actuel
-        cursor.execute(
-            "SELECT xp FROM utilisateurs WHERE user_id = ?",
-            (message.author.id,)
-        )
-        xp_actuel = cursor.fetchone()[0]
+            level_avant = self.get_level(xp_actuel)
 
-        level_avant = self.get_level(xp_actuel)
+            xp_gain = random.randint(1, 10)
+            argent_gain = random.randint(5, 15)
 
-        # Gains
-        xp_gain = random.randint(1, 10)
-        argent_gain = random.randint(5, 15)
+            xp_apres = xp_actuel + xp_gain
+            level_apres = self.get_level(xp_apres)
 
-        xp_apres = xp_actuel + xp_gain
-        level_apres = self.get_level(xp_apres)
+            if level_apres > level_avant:
+                channel_id = os.getenv("CHANNEL_COMMANDE_ID")
+                channel = message.guild.get_channel(int(channel_id)) if channel_id else None
+                if channel:
+                    await channel.send(
+                        f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
+                    )
 
-        # Level up
-        if level_apres > level_avant:
-            channel = message.guild.get_channel(int(os.getenv("CHANNEL_COMMANDE_ID")))
-            if channel:
-                await channel.send(
-                    f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
-                )
+            cursor.execute(
+                "UPDATE utilisateurs SET xp = ?, argent = argent + ? WHERE user_id = ?",
+                (xp_apres, argent_gain, message.author.id)
+            )
 
-        # Update
-        cursor.execute(
-            "UPDATE utilisateurs SET xp = ?, argent = argent + ? WHERE user_id = ?",
-            (xp_apres, argent_gain, message.author.id)
-        )
-
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
 
         # IMPORTANT pour les commandes
         await self.bot.process_commands(message)
 
-
     @commands.Cog.listener()
     async def on_member_join(self, member):
-        from cogs.visite import VisiteGuidee  # éviter import circulaire
-        blacklist = [1322202659461271623]
-        if member.id in blacklist:
+        if member.id in BLACKLIST:
             try:
                 await member.send("Tu as été blacklisté du serveur. Kick immediat.")
             except discord.Forbidden:
                 pass
-            await member.kick()
+            await member.kick(reason="Membre blacklisté")
+            return
 
         embed = discord.Embed(
             title="👋 Bienvenue !",
@@ -187,4 +191,3 @@ class Events(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Events(bot))
-

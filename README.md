@@ -37,6 +37,8 @@ CHANNEL_TRADE_ID=[l'id de votre salon de trade brainrot]
 CHANNEL_COMMANDE_ID=[l'id de votre salon de commande]
 CHEMIN_DB=[le chemin local où vous voulez que la base de donnée soit]
 CHANNEL_RECRUTEMENT=[l'identifiant du salon de recrutement]
+ROLE_RECRUTEMENT=[l'id du rôle donné aux modérateurs test acceptés]
+ROLE_VISITE=[l'id du rôle donné à la fin de la visite guidée (optionnel)]
 ```
 *Astuce : Pensez a avoir activé le mode developpeur dans les parametres de discord pour obtenir les identifiants*
 

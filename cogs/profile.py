@@ -26,19 +26,16 @@ class Profile(commands.Cog):
         if not interaction.response.is_done():
             await interaction.response.defer()
         embed = discord.Embed(title="Profil", description="Ton profil contient ton **argent**, ton **XP** et tes **niveaux**", color=discord.Color.green())
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = ?", (interaction.user.id,))
-        result = cursor.fetchone()
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT argent, xp FROM utilisateurs WHERE user_id = ?", (interaction.user.id,))
+            result = cursor.fetchone()
         argent = result[0] if result and result[0] is not None else 0
+        xp = result[1] if result and result[1] is not None else 0
         embed.add_field(name="Argent :", value=f"{argent} €", inline=False)
-        cursor.execute("SELECT xp FROM utilisateurs WHERE user_id = ?", (interaction.user.id,))
-        result1 = cursor.fetchone()
-        xp = result1[0] if result1 and result1[0] is not None else 0
         embed.add_field(name="Experience :", value=f"{xp}", inline=False)
         nv = self.get_level(xp)
         embed.add_field(name="Niveau :", value=f"{nv}", inline=False)
-        conn.close()
         if interaction.response.is_done():
             await interaction.followup.send(embed=embed)
         else:
