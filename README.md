@@ -30,9 +30,9 @@ déjà installé et démarré (en local pour le dev, sur votre serveur pour la p
 une base et un utilisateur dédiés :
 
 ```sql
-CREATE DATABASE IF NOT EXISTS pixelbot CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE IF NOT EXISTS pixelbot_n CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS 'pixelbot'@'localhost' IDENTIFIED BY 'un_mot_de_passe_solide';
-GRANT ALL PRIVILEGES ON pixelbot.* TO 'pixelbot'@'localhost';
+GRANT ALL PRIVILEGES ON pixelbot_n.* TO 'pixelbot'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
@@ -61,7 +61,7 @@ DB_HOST=[l'adresse de votre serveur MariaDB, ex: 127.0.0.1]
 DB_PORT=[le port de votre serveur MariaDB, généralement 3306]
 DB_USER=[l'utilisateur MariaDB créé à l'étape précédente]
 DB_PASSWORD=[son mot de passe]
-DB_NAME=[le nom de la base, ex: pixelbot]
+DB_NAME=[le nom de la base, ex: pixelbot_n]
 ```
 *Astuce : Pensez a avoir activé le mode developpeur dans les parametres de discord pour obtenir les identifiants*
 

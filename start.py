@@ -225,7 +225,6 @@ COGS = [
     "cogs.visite",
     "cogs.setupticket",
     "cogs.warn",
-    "cogs.getdb",
     "cogs.recrutement",
 ]
 

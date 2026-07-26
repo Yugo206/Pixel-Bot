@@ -6,3 +6,4 @@ __pycache__/
 INTRO.py
 *.db
 vscode/
+.venv
