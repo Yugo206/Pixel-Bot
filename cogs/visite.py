@@ -1,9 +1,8 @@
 # cogs/visite.py
+import os
 import discord
 from discord.ext import commands
 from discord import app_commands
-import json
-from datetime import datetime
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -63,11 +62,11 @@ class VisiteGuidee(discord.ui.View):
             await interaction.response.edit_message(embed=new_view.get_embed(), view=new_view)
             return False
         elif cid == "end":
-            # ajoute rôle si possible
-            with open("config.json", "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-            guild = interaction.client.get_guild(cfg.get("GUILD_ID"))
-            role = discord.utils.get(guild.roles, id=cfg.get("ROLE_VISITE")) if guild else None
+            # ajoute rôle si possible (configuré via .env : GUILD_ID / ROLE_VISITE)
+            guild_id = os.getenv("GUILD_ID")
+            role_id = os.getenv("ROLE_VISITE")
+            guild = interaction.client.get_guild(int(guild_id)) if guild_id else None
+            role = discord.utils.get(guild.roles, id=int(role_id)) if (guild and role_id) else None
             member = guild.get_member(interaction.user.id) if guild else None
             if member and role:
                 try:

@@ -1,246 +1,256 @@
-# main.py
-import sqlite3
 import time
 import discord
 from discord.ext import commands, tasks
+from discord import app_commands
 import asyncio
 import os
 from dotenv import load_dotenv
+
 load_dotenv()
-from utils.setupdatabase import DB_PATH
-from dotenv import load_dotenv
-load_dotenv()
+
+from utils.database import create_pool, close_pool, get_pool
 from utils.setupdatabase import init_db
-init_db()  # ✅ Crée la DB et toutes les tables avant les cogs
 
-try:
-    # Chargement config
-    try:
-        Token = os.getenv("DISCORD_TOKEN")
-    except Exception as e:
-        print(e)
-    # main.py
+Token = os.getenv("DISCORD_TOKEN")
+if not Token:
+    raise RuntimeError("DISCORD_TOKEN non défini")
 
-    if not Token:
-        raise RuntimeError("DISCORD_TOKEN non défini")
+intents = discord.Intents.default()
+intents.message_content = True
+intents.members = True  # nécessaire pour on_member_join/on_member_remove et fetch_member
 
-    intents = discord.Intents.default()
-    intents.message_content = True
-
-    bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-    @tasks.loop(seconds=120)
-    async def ticket_watcher():
-        await bot.wait_until_ready()
+@tasks.loop(seconds=120)
+async def ticket_watcher():
+    await bot.wait_until_ready()
 
-        now = time.time()
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
+    now = int(time.time())
+    pool = get_pool()
 
-        cur.execute("""
-        SELECT thread_id, last_message, warn_12h, closed_at, statut
-        FROM ticket
-        """)
-        tickets = cur.fetchall()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+            SELECT thread_id, last_message, warn_12h, closed_at, statut
+            FROM ticket
+            """)
+            tickets = await cur.fetchall()
 
-        for thread_id, last_msg, warn_12h, closed_at, statut in tickets:
-            thread = bot.get_channel(thread_id)
-            if not thread:
+            for thread_id, last_msg, warn_12h, closed_at, statut in tickets:
                 try:
-                    thread = await bot.fetch_channel(thread_id)
-                except Exception:
-                    continue
+                    thread = bot.get_channel(thread_id)
+                    if not thread:
+                        try:
+                            thread = await bot.fetch_channel(thread_id)
+                        except discord.NotFound:
+                            # Le thread n'existe plus : on nettoie l'entrée orpheline.
+                            await cur.execute("DELETE FROM ticket WHERE thread_id = %s", (thread_id,))
+                            continue
+                        except discord.HTTPException:
+                            continue
 
-            # ---------------------------------------------------------
-            # ⛔ TICKET DÉJÀ FERMÉ
-            # Si le ticket est marqué comme fermé (statut = 3),
-            # on vérifie simplement si 24h se sont écoulées depuis
-            # la fermeture pour supprimer le thread automatiquement.
-            # ---------------------------------------------------------
-            if statut == 3:
-                if closed_at:
-                    # Vérifie si la date actuelle dépasse la date
-                    # de fermeture + 24 heures
-                    if now >= closed_at + (24 * 3600):
-                        await thread.delete(reason="Ticket fermé depuis plus de 24h.")
-                        cur.execute(
-                            "DELETE FROM ticket WHERE thread_id = ?",
+                    # ---------------------------------------------------------
+                    # ⛔ TICKET DÉJÀ FERMÉ
+                    # Si le ticket est marqué comme fermé (statut = 3),
+                    # on vérifie simplement si 24h se sont écoulées depuis
+                    # la fermeture pour supprimer le thread automatiquement.
+                    # ---------------------------------------------------------
+                    if statut == 3:
+                        if closed_at and now >= closed_at + (24 * 3600):
+                            await thread.delete(reason="Ticket fermé depuis plus de 24h.")
+                            await cur.execute("DELETE FROM ticket WHERE thread_id = %s", (thread_id,))
+                        continue
+
+                    # ---------------------------------------------------------
+                    # 🕒 TICKET ACTIF
+                    # last_msg = timestamp du dernier message dans le ticket.
+                    # ---------------------------------------------------------
+                    if last_msg is None:
+                        continue
+
+                    inactivity = now - last_msg
+
+                    # ---------------------------------------------------------
+                    # ⚠️ AVERTISSEMENT APRÈS 12 HEURES
+                    # ---------------------------------------------------------
+                    if inactivity >= 12 * 3600 and not warn_12h:
+                        await thread.send("⚠️ Ticket inactif depuis 12h.")
+                        await cur.execute(
+                            "UPDATE ticket SET warn_12h = 1 WHERE thread_id = %s",
                             (thread_id,)
                         )
-                continue
 
-            # ---------------------------------------------------------
-            # 🕒 TICKET ACTIF
-            # Si le ticket n'est pas fermé, on vérifie son activité.
-            # last_msg = timestamp du dernier message dans le ticket.
-            # ---------------------------------------------------------
-            if last_msg is None:
-                continue
+                    # ---------------------------------------------------------
+                    # 🔒 FERMETURE AUTOMATIQUE APRÈS 24 HEURES
+                    # ---------------------------------------------------------
+                    if inactivity >= 24 * 3600:
+                        await thread.send("🔒 Ticket fermé pour inactivité.")
+                        await thread.edit(archived=True, locked=True)
+                        await cur.execute("""
+                        UPDATE ticket
+                        SET statut = 3, closed_at = %s
+                        WHERE thread_id = %s
+                        """, (now, thread_id))
+                except Exception as e:
+                    print(f"[ticket_watcher] Erreur sur le ticket {thread_id} : {e}")
 
-            # Temps d'inactivité du ticket
-            inactivity = now - last_msg
+        await conn.commit()
 
-            # ---------------------------------------------------------
-            # ⚠️ AVERTISSEMENT APRÈS 12 HEURES
-            # Si aucun message n'a été envoyé depuis 12h,
-            # on envoie un avertissement dans le thread.
-            # warn_12h empêche d'envoyer le message plusieurs fois.
-            # ---------------------------------------------------------
-            if inactivity >= 12 * 3600 and not warn_12h:
-                await thread.send("⚠️ Ticket inactif depuis 12h.")
-                cur.execute(
-                    "UPDATE ticket SET warn_12h = 1 WHERE thread_id = ?",
-                    (thread_id,)
-                )
 
-            # ---------------------------------------------------------
-            # 🔒 FERMETURE AUTOMATIQUE APRÈS 24 HEURES
-            # Si aucune activité pendant 24h, le ticket est fermé :
-            # - on archive
-            # - on verrouille
-            # - on stocke la date de fermeture
-            # ---------------------------------------------------------
-            if inactivity >= 24 * 3600:
-                await thread.send("🔒 Ticket fermé pour inactivité.")
-                await thread.edit(archived=True, locked=True)
-                cur.execute("""
-                UPDATE ticket
-                SET statut = 3, closed_at = ?
-                WHERE thread_id = ?
-                """, (now, thread_id))
+# ---------------------------------------------------------
+# 👮 SURVEILLANCE DES PÉRIODES DE TEST STAFF
+# Vérifie si les 7 jours de test d'un staff sont terminés.
+# Si oui, le bot envoie un message demandant si le membre
+# doit rester staff ou être retiré du staff.
+# ---------------------------------------------------------
+@tasks.loop(minutes=30)
+async def staff_test_watcher():
+    await bot.wait_until_ready()
 
-        conn.commit()
-        conn.close()
+    now = int(time.time())
+    pool = get_pool()
 
-    # ---------------------------------------------------------
-    # 👮 SURVEILLANCE DES PÉRIODES DE TEST STAFF
-    # Vérifie si les 7 jours de test d'un staff sont terminés.
-    # Si oui, le bot envoie un message demandant si le membre
-    # doit rester staff ou être retiré du staff.
-    # ---------------------------------------------------------
-    @tasks.loop(minutes=30)
-    async def staff_test_watcher():
-        await bot.wait_until_ready()
+    guild_id = os.getenv("GUILD_ID")
+    channel_id = os.getenv("CHANNEL_MODO_ID")
 
-        now = time.time()
-        conn = sqlite3.connect(DB_PATH)
-        cur = conn.cursor()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("""
+            SELECT user_id, role_id, end_time
+            FROM role_temp
+            """)
+            rows = await cur.fetchall()
 
-        # On récupère les membres avec un rôle temporaire
-        cur.execute("""
-        SELECT user_id, role_id, end_time
-        FROM role_temp
-        """)
-        rows = cur.fetchall()
-
-        for user_id, role_id, end_time in rows:
-
-            # Si la période de test est terminée
-            if now >= end_time:
-
-                guild_id = int(os.getenv("GUILD_ID"))
-                guild = bot.get_guild(guild_id)
-                if guild is None:
-                    guild = await bot.fetch_guild(guild_id)
-
-                member = guild.get_member(user_id)
-                if member is None:
-                    member = await guild.fetch_member(user_id)
-
-                if not member:
+            for user_id, role_id, end_time in rows:
+                if now < end_time:
                     continue
-
-                role = guild.get_role(role_id)
-                channel_id = int(os.getenv("CHANNEL_MODO_ID"))
-                staff_channel = bot.get_channel(channel_id)
-                if staff_channel is None:
-                    staff_channel = await bot.fetch_channel(channel_id)
-
-                if not staff_channel:
-                    continue
-
-                embed = discord.Embed(
-                    title="Fin de période de test",
-                    description=f"La période de test de {member.mention} est terminée.\n Voulez‑vous **le garder dans le staff** ou **retirer son rôle** ?",
-                    color=discord.Color.orange()
-                )
 
                 try:
+                    if not guild_id:
+                        continue
+
+                    guild = bot.get_guild(int(guild_id))
+                    if guild is None:
+                        guild = await bot.fetch_guild(int(guild_id))
+
+                    member = guild.get_member(user_id)
+                    if member is None:
+                        try:
+                            member = await guild.fetch_member(user_id)
+                        except discord.NotFound:
+                            await cur.execute("DELETE FROM role_temp WHERE user_id = %s", (user_id,))
+                            continue
+
+                    if not channel_id:
+                        continue
+
+                    staff_channel = bot.get_channel(int(channel_id))
+                    if staff_channel is None:
+                        staff_channel = await bot.fetch_channel(int(channel_id))
+
+                    if not staff_channel:
+                        continue
+
+                    embed = discord.Embed(
+                        title="Fin de période de test",
+                        description=f"La période de test de {member.mention} est terminée.\n Voulez‑vous **le garder dans le staff** ou **retirer son rôle** ?",
+                        color=discord.Color.orange()
+                    )
+
                     await staff_channel.send(embed=embed)
+
+                    # On supprime l'entrée pour éviter de redemander
+                    await cur.execute("DELETE FROM role_temp WHERE user_id = %s", (user_id,))
                 except Exception as e:
-                    print("ERREUR ENVOI STAFF :", e)
+                    print(f"[staff_test_watcher] Erreur pour l'utilisateur {user_id} : {e}")
 
-                # On supprime l'entrée pour éviter de redemander
-                cur.execute(
-                    "DELETE FROM role_temp WHERE user_id = ?",
-                    (user_id,)
-                )
-
-        conn.commit()
-        conn.close()
+        await conn.commit()
 
 
-    @tasks.loop(seconds=10)
-    async def cycle_status():
-        activities = [
-            discord.Game("Anime Pixel Party"),
-            discord.Activity(type=discord.ActivityType.watching, name="La version 1.1.2"),
-            discord.Activity(type=discord.ActivityType.listening, name="Les membres de Pixel Party"),
-        ]
+@tasks.loop(seconds=10)
+async def cycle_status():
+    activities = [
+        discord.Game("Anime Pixel Party"),
+        discord.Activity(type=discord.ActivityType.watching, name="La version 1.1.2"),
+        discord.Activity(type=discord.ActivityType.listening, name="Les membres de Pixel Party"),
+    ]
 
-        activity = activities[cycle_status.current_loop % len(activities)]
-        await bot.change_presence(activity=activity)
-
-
-    @bot.event
-    async def on_ready():
-        print(f"Connecté en tant que {bot.user}")
-        if not hasattr(bot, "synced"):
-            await bot.tree.sync()
-            bot.synced = True
-
-        if not ticket_watcher.is_running():
-            ticket_watcher.start()
-
-        if not cycle_status.is_running():
-            cycle_status.start()
-
-        if not staff_test_watcher.is_running():
-            staff_test_watcher.start()
+    activity = activities[cycle_status.current_loop % len(activities)]
+    await bot.change_presence(activity=activity)
 
 
-    async def setup_hook():
-            async with bot:
-                COGS = [
-                    "cogs.boutique",
-                    "cogs.profile",
-                    "cogs.tickets",
-                    "cogs.events",
-                    "cogs.trade",
-                    "cogs.visite",
-                    "cogs.setupticket",
-                    "cogs.warn",
-                    "cogs.getdb",
-                    "cogs.recrutement",
-                ]
+@bot.tree.error
+async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    if isinstance(error, app_commands.MissingPermissions):
+        message = "❌ Tu n'as pas la permission d'utiliser cette commande."
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        message = f"⏳ Cette commande est en cooldown, réessaie dans {error.retry_after:.0f}s."
+    else:
+        print(f"[Erreur commande] /{interaction.command.name if interaction.command else '?'} : {error}")
+        message = "❌ Une erreur inattendue est survenue en exécutant cette commande."
 
-                for cog in COGS:
-                    try:
-                        await bot.load_extension(cog)
-                        print(f"[Cog] {cog} chargé.")
-                    except Exception as e:
-                        print(f"[Cog] ERREUR {cog} :", e)
-
-                await bot.start(Token)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException:
+        pass
 
 
+@bot.event
+async def on_ready():
+    print(f"Connecté en tant que {bot.user}")
+    if not hasattr(bot, "synced"):
+        await bot.tree.sync()
+        bot.synced = True
 
-    if __name__ == "__main__":
-        try:
-            asyncio.run(setup_hook())
-        except KeyboardInterrupt:
-            print("Bot arrêté depuis PyCharm.")
+    if not ticket_watcher.is_running():
+        ticket_watcher.start()
 
-except Exception as e:
-    print(e)
+    if not cycle_status.is_running():
+        cycle_status.start()
+
+    if not staff_test_watcher.is_running():
+        staff_test_watcher.start()
+
+
+COGS = [
+    "cogs.boutique",
+    "cogs.profile",
+    "cogs.tickets",
+    "cogs.events",
+    "cogs.trade",
+    "cogs.visite",
+    "cogs.setupticket",
+    "cogs.warn",
+    "cogs.recrutement",
+]
+
+
+async def main():
+    # Le pool de connexions MariaDB doit exister avant tout chargement de cog
+    # (plusieurs cogs font des requêtes dès leur mise en place).
+    pool = await create_pool()
+    try:
+        await init_db(pool)  # ✅ Crée la DB et toutes les tables avant les cogs
+
+        async with bot:
+            for cog in COGS:
+                try:
+                    await bot.load_extension(cog)
+                    print(f"[Cog] {cog} chargé.")
+                except Exception as e:
+                    print(f"[Cog] ERREUR {cog} :", e)
+
+            await bot.start(Token)
+    finally:
+        await close_pool()
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot arrêté.")

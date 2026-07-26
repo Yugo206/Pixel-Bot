@@ -1,12 +1,11 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import sqlite3
 from dotenv import load_dotenv
 load_dotenv()
 
 
-from utils.setupdatabase import DB_PATH
+from utils.database import get_pool
 
 class Profile(commands.Cog):
     def __init__(self, bot):
@@ -26,19 +25,17 @@ class Profile(commands.Cog):
         if not interaction.response.is_done():
             await interaction.response.defer()
         embed = discord.Embed(title="Profil", description="Ton profil contient ton **argent**, ton **XP** et tes **niveaux**", color=discord.Color.green())
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = ?", (interaction.user.id,))
-        result = cursor.fetchone()
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT argent, xp FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
+                result = await cursor.fetchone()
         argent = result[0] if result and result[0] is not None else 0
+        xp = result[1] if result and result[1] is not None else 0
         embed.add_field(name="Argent :", value=f"{argent} €", inline=False)
-        cursor.execute("SELECT xp FROM utilisateurs WHERE user_id = ?", (interaction.user.id,))
-        result1 = cursor.fetchone()
-        xp = result1[0] if result1 and result1[0] is not None else 0
         embed.add_field(name="Experience :", value=f"{xp}", inline=False)
         nv = self.get_level(xp)
         embed.add_field(name="Niveau :", value=f"{nv}", inline=False)
-        conn.close()
         if interaction.response.is_done():
             await interaction.followup.send(embed=embed)
         else:
