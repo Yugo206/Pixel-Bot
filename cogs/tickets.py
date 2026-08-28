@@ -11,6 +11,13 @@ from cogs.warn import ContestationView
 from utils.database import get_pool
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 
+# ID à contacter en cas d'erreur DB critique (avant : codé en dur dans le fichier).
+OWNER_ID = os.getenv("OWNER_ID")
+
+
+def _owner_mention() -> str:
+    return f"<@{OWNER_ID}>" if OWNER_ID else "un administrateur"
+
 
 class AvisModal(discord.ui.Modal, title="Ton avis"):
     avis = discord.ui.TextInput(
@@ -107,7 +114,7 @@ class ModoView(discord.ui.View):
                     result = await c.fetchone()
         except aiomysql.Error as e:
             print(e)
-            await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme", ephemeral=True)
+            await interaction.followup.send(f"ERREUR DB : Contacte {_owner_mention()} pour resoudre le probleme", ephemeral=True)
             return
 
         if result is None:
@@ -116,7 +123,7 @@ class ModoView(discord.ui.View):
 
         thread_id, membre_id, message_ticket_id = result
         if thread_id is None or membre_id is None or message_ticket_id is None:
-            await interaction.followup.send("ERREUR DB : Contacte <@1377571267108143194> pour resoudre le probleme", ephemeral=True)
+            await interaction.followup.send(f"ERREUR DB : Contacte {_owner_mention()} pour resoudre le probleme", ephemeral=True)
             return
 
         try:
@@ -305,7 +312,8 @@ class FermerView(discord.ui.View):
         bot = interaction.client
         membre = await bot.fetch_user(membre_id)
 
-        role = discord.utils.get(interaction.user.roles, id=int(os.getenv("ROLE_MODO_ID")))
+        role_modo_id = os.getenv("ROLE_MODO_ID")
+        role = discord.utils.get(interaction.user.roles, id=int(role_modo_id)) if role_modo_id else None
         if role:
             await interaction.followup.send("Comment s'est passé votre ticket ?", view=SatisfactionView(), ephemeral=True)
         else:

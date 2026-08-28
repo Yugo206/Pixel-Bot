@@ -238,7 +238,10 @@ class Warn(commands.Cog):
         if not bans:
             return
 
-        guild = self.bot.get_guild(int(os.getenv("GUILD_ID")))
+        guild_id = os.getenv("GUILD_ID")
+        if not guild_id:
+            return
+        guild = self.bot.get_guild(int(guild_id))
         if not guild:
             return
 

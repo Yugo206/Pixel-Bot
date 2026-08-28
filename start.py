@@ -4,6 +4,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 import asyncio
 import os
+import signal
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -233,6 +234,20 @@ async def main():
     # Le pool de connexions MariaDB doit exister avant tout chargement de cog
     # (plusieurs cogs font des requêtes dès leur mise en place).
     pool = await create_pool()
+
+    # Arrêt propre sur SIGTERM (systemd, pm2, docker stop, redéploiement...)
+    # et SIGINT (Ctrl+C) : ferme proprement la connexion Discord, ce qui
+    # laisse le `finally` ci-dessous fermer aussi le pool MariaDB au lieu de
+    # couper le process brutalement. add_signal_handler n'existe pas sur
+    # l'event loop Windows : on l'ignore silencieusement dans ce cas, Ctrl+C
+    # reste géré via le KeyboardInterrupt tout en bas du fichier.
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(bot.close()))
+        except NotImplementedError:
+            pass
+
     try:
         await init_db(pool)  # ✅ Crée la DB et toutes les tables avant les cogs
 
