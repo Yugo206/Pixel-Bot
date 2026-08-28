@@ -116,7 +116,7 @@ class ModoView(discord.ui.View):
                     )
                     result = await c.fetchone()
         except aiomysql.Error as e:
-            logger.error(f"[tickets:prendre] Erreur DB : {e}")
+            logger.critical(f"[tickets:prendre] Erreur DB : {e}", exc_info=True)
             await interaction.followup.send(f"ERREUR DB : Contacte {_owner_mention()} pour resoudre le probleme", ephemeral=True)
             return
 
@@ -159,7 +159,7 @@ class ModoView(discord.ui.View):
                         (interaction.user.id, 2, thread_id))
                 await conn.commit()
         except aiomysql.Error as e:
-            logger.error(f"[tickets:prendre] Erreur DB update : {e}")
+            logger.critical(f"[tickets:prendre] Erreur DB update : {e}", exc_info=True)
 
 
 class SatisfactionView(discord.ui.View):
@@ -240,7 +240,7 @@ class SatisfactionView(discord.ui.View):
                 await conn.commit()
 
         except aiomysql.Error as e:
-            logger.error(f"[tickets:avis] Erreur SQL : {e}")
+            logger.critical(f"[tickets:avis] Erreur SQL : {e}", exc_info=True)
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
 
@@ -348,7 +348,7 @@ class FermerView(discord.ui.View):
                     )
                 await conn.commit()
         except aiomysql.Error as e:
-            logger.error(f"[tickets:fermer] Erreur DB : {e}")
+            logger.critical(f"[tickets:fermer] Erreur DB : {e}", exc_info=True)
 
 
 class TicketCreateView(discord.ui.View):
@@ -406,7 +406,7 @@ class TicketCreateView(discord.ui.View):
                     )
                 await conn.commit()
         except aiomysql.Error as e:
-            logger.error(f"[tickets:create] Erreur DB : {e}")
+            logger.critical(f"[tickets:create] Erreur DB : {e}", exc_info=True)
 
         if raison == "Partenariat":
             embed_partenariat_intro = discord.Embed(title="Bienvenue sur ton ticket partenariat !",

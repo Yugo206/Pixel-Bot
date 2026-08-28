@@ -158,7 +158,7 @@ class AchatSelect(discord.ui.Select):
                         return
 
         except aiomysql.Error as e:
-            logger.error(f"Erreur SQL achat : {e}")
+            logger.critical(f"Erreur SQL achat : {e}", exc_info=True)
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
 
@@ -250,7 +250,7 @@ class BoutiqueCog(commands.Cog):
                     await cursor.execute("SELECT name, price, type, valeur, duration FROM shop")
                     items = await cursor.fetchall()
         except aiomysql.Error as e:
-            logger.error(f"Erreur SQL boutique : {e}")
+            logger.critical(f"Erreur SQL boutique : {e}", exc_info=True)
 
         if not items:
             embed.description = "❌ Boutique vide"

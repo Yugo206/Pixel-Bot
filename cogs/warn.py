@@ -324,7 +324,7 @@ class Warn(commands.Cog):
 
                 await conn.commit()
         except aiomysql.Error as e:
-            logger.error(f"[warn] Erreur DB : {e}")
+            logger.critical(f"[warn] Erreur DB : {e}", exc_info=True)
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
 

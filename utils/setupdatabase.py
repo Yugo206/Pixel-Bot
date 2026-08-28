@@ -96,6 +96,18 @@ TABLES = {
         "role_id BIGINT NOT NULL",
         "end_time BIGINT NOT NULL",
     ],
+
+    "error": [
+        # Historique des erreurs CRITICAL (voir utils/error_handler.py) : alimenté
+        # automatiquement, pour investigation a posteriori sans dépendre des logs.
+        "id INT PRIMARY KEY AUTO_INCREMENT",
+        "created_at BIGINT NOT NULL",
+        "created_at_iso VARCHAR(64) NOT NULL",
+        "level VARCHAR(16) NOT NULL",
+        "source VARCHAR(128) NOT NULL",
+        "message TEXT NOT NULL",
+        "traceback TEXT",
+    ],
 }
 
 
