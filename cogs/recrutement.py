@@ -137,7 +137,7 @@ class Accepterview(discord.ui.View):
             async with conn.cursor() as cursor:
                 time_end = int(time.time()) + 7 * 24 * 3600
                 await cursor.execute(
-                    "INSERT INTO role_temp (user_id, role_id, end_time) VALUES (%s, %s, %s)",
+                    "INSERT INTO temp_roles (user_id, role_id, end_time, origin) VALUES (%s, %s, %s, 'staff_test')",
                     (user_id, role.id if role else role_id, int(time_end))
                 )
             await conn.commit()

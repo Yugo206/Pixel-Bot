@@ -132,16 +132,13 @@ async def staff_test_watcher():
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("""
-            SELECT user_id, role_id, end_time
-            FROM role_temp
-            """)
+            await cur.execute(
+                "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'staff_test' AND end_time <= %s",
+                (now,)
+            )
             rows = await cur.fetchall()
 
-            for user_id, role_id, end_time in rows:
-                if now < end_time:
-                    continue
-
+            for row_id, user_id, role_id in rows:
                 try:
                     if not guild_id:
                         continue
@@ -155,7 +152,7 @@ async def staff_test_watcher():
                         try:
                             member = await guild.fetch_member(user_id)
                         except discord.NotFound:
-                            await cur.execute("DELETE FROM role_temp WHERE user_id = %s", (user_id,))
+                            await cur.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
                             continue
 
                     if not channel_id:
@@ -177,7 +174,7 @@ async def staff_test_watcher():
                     await staff_channel.send(embed=embed)
 
                     # On supprime l'entrée pour éviter de redemander
-                    await cur.execute("DELETE FROM role_temp WHERE user_id = %s", (user_id,))
+                    await cur.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
                 except Exception as e:
                     logger.error(f"[staff_test_watcher] Erreur pour l'utilisateur {user_id} : {e}")
 
