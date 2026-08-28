@@ -5,6 +5,7 @@ import os
 import aiomysql
 load_dotenv()
 from utils.database import get_pool
+from utils.sanctions import get_modo_channel
 import time
 
 
@@ -112,7 +113,15 @@ class Accepterview(discord.ui.View):
         except discord.Forbidden:
             pass
 
-        role_id = int(os.getenv("ROLE_RECRUTEMENT"))
+        raw_role_id = os.getenv("ROLE_RECRUTEMENT")
+        if not raw_role_id:
+            await interaction.followup.send(
+                "❌ Configuration manquante : la variable ROLE_RECRUTEMENT n'est pas définie, "
+                "le rôle de test n'a pas pu être attribué."
+            )
+            return
+
+        role_id = int(raw_role_id)
         role = interaction.guild.get_role(role_id)
         if role is not None:
             try:
@@ -181,11 +190,13 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
 
             await interaction.response.send_message("✅ Formulaire envoyé !", embed=embed, ephemeral=True)
 
-            channel_id = int(os.getenv("CHANNEL_MODO_ID"))
-            channel = interaction.client.get_channel(channel_id)
-
+            channel = await get_modo_channel(interaction.client, interaction.guild)
             if channel is None:
-                channel = await interaction.client.fetch_channel(channel_id)
+                await interaction.followup.send(
+                    "❌ Configuration manquante : le salon de modération (CHANNEL_MODO_ID) est introuvable.",
+                    ephemeral=True
+                )
+                return
 
             msg = await channel.send(embed=embed, view=Accepterview())
 

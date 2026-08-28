@@ -57,13 +57,21 @@ CHANNEL_COMMANDE_ID=[l'id de votre salon de commande]
 CHANNEL_RECRUTEMENT=[l'identifiant du salon de recrutement]
 ROLE_RECRUTEMENT=[l'id du rôle donné aux modérateurs test acceptés]
 ROLE_VISITE=[l'id du rôle donné à la fin de la visite guidée (optionnel)]
+OWNER_ID=[votre id discord, contacté en cas d'erreur DB critique]
 DB_HOST=[l'adresse de votre serveur MariaDB, ex: 127.0.0.1]
 DB_PORT=[le port de votre serveur MariaDB, généralement 3306]
 DB_USER=[l'utilisateur MariaDB créé à l'étape précédente]
 DB_PASSWORD=[son mot de passe]
 DB_NAME=[le nom de la base, ex: pixelbot_n]
+DB_SSL=[true si l'hébergeur de la base l'exige (ex: alwaysdata), false pour une base locale/sur le même serveur (optionnel, défaut false)]
+DB_SSL_CA=[chemin vers un certificat CA custom, rarement nécessaire (optionnel)]
+DB_POOL_RECYCLE=[durée en secondes avant recyclage des connexions inactives du pool (optionnel, défaut 1800)]
 ```
 *Astuce : Pensez a avoir activé le mode developpeur dans les parametres de discord pour obtenir les identifiants*
+
+*Astuce : `DB_SSL`, `DB_SSL_CA` et `DB_POOL_RECYCLE` sont indépendants de l'hébergeur — que la base et le bot
+tournent sur la même machine (VPS) ou séparément (ex: base chez alwaysdata, bot ailleurs), il suffit d'ajuster
+ces variables sans toucher au code.*
 
 ## 5) Terminé !
 
