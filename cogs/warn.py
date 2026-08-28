@@ -225,7 +225,10 @@ class Warn(commands.Cog):
     def cog_unload(self):
         self.check_tempbans.cancel()
 
-    @tasks.loop(seconds=30)
+    # 30s d'origine était inutilement agressif pour un débannissement automatique
+    # (personne ne remarque 5 min d'écart) ; aligné sur la cadence des autres
+    # boucles de nettoyage (voir check_temp_roles dans cogs/boutique.py).
+    @tasks.loop(minutes=5)
     async def check_tempbans(self):
         now = int(time.time())
         pool = get_pool()

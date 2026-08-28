@@ -31,11 +31,25 @@ if not Token:
 # sans OWNER_ID, le bot tourne normalement mais sans alerte proactive.
 OWNER_ID = os.getenv("OWNER_ID")
 
-intents = discord.Intents.default()
-intents.message_content = True
+intents = discord.Intents.none()
+intents.guilds = True  # cœur : accès aux serveurs, salons, threads
+intents.guild_messages = True  # on_message (XP, suivi des tickets, préfixe !)
+intents.message_content = True  # lecture du contenu (commandes préfixées, wait_for)
 intents.members = True  # nécessaire pour on_member_join/on_member_remove et fetch_member
+# Intents.default() active aussi reactions/typing/voice/invites/webhooks/emojis/
+# scheduled_events/auto_moderation etc., qu'aucun cog n'utilise (vérifié : pas
+# d'écouteur on_reaction/on_typing, pas de PyNaCl/voix, pas de wait_for en DM).
+# Les laisser désactivées réduit le volume d'évènements gateway à traiter — utile
+# vu le quota RAM/CPU limité sur alwaysdata.
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    # Cache interne des messages (édition/suppression) inutilisé par le bot
+    # (aucun on_message_edit/on_message_delete, aucun get_message) : le désactiver
+    # évite de garder ~1000 objets Message en mémoire pour rien.
+    max_messages=None,
+)
 
 
 @tasks.loop(seconds=120)
@@ -181,7 +195,7 @@ async def staff_test_watcher():
         await conn.commit()
 
 
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=60)
 async def cycle_status():
     activities = [
         discord.Game("Anime Pixel Party"),

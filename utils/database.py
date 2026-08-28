@@ -38,8 +38,14 @@ async def create_pool() -> aiomysql.Pool:
         db=os.getenv("DB_NAME"),
         charset="utf8mb4",
         autocommit=False,
-        minsize=1,
-        maxsize=10,
+        # minsize=1 : aucune connexion inactive superflue au repos. maxsize abaissé
+        # de 10 (défaut d'origine, surdimensionné pour ce bot) à 5 : réduit le nombre
+        # maximal de connexions ouvertes simultanément (mémoire côté process ET côté
+        # serveur MariaDB) sous charge, tout en restant largement suffisant vu le
+        # volume de requêtes concurrentes réel du bot. Réglable via DB_POOL_MINSIZE/
+        # DB_POOL_MAXSIZE si besoin (ex: plus de marge sur un futur VPS dédié).
+        minsize=int(os.getenv("DB_POOL_MINSIZE", "1")),
+        maxsize=int(os.getenv("DB_POOL_MAXSIZE", "5")),
         ssl=_build_ssl_context(),
         # Recycle les connexions inactives avant que le serveur (souvent plus
         # agressif sur de l'hébergement mutualisé) ne les ferme lui-même côté

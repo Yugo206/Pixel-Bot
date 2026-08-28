@@ -66,14 +66,16 @@ DB_NAME=[le nom de la base, ex: pixelbot_n]
 DB_SSL=[true si l'hébergeur de la base l'exige (ex: alwaysdata), false pour une base locale/sur le même serveur (optionnel, défaut false)]
 DB_SSL_CA=[chemin vers un certificat CA custom, rarement nécessaire (optionnel)]
 DB_POOL_RECYCLE=[durée en secondes avant recyclage des connexions inactives du pool (optionnel, défaut 1800)]
+DB_POOL_MINSIZE=[nombre minimum de connexions gardées ouvertes dans le pool (optionnel, défaut 1)]
+DB_POOL_MAXSIZE=[nombre maximum de connexions simultanées dans le pool (optionnel, défaut 5)]
 LOG_LEVEL=[niveau de verbosité des logs : DEBUG/INFO/WARNING/ERROR (optionnel, défaut INFO)]
 DM_ERROR_COOLDOWN=[secondes minimum entre deux MP d'alerte pour la même erreur (optionnel, défaut 300)]
 ```
 *Astuce : Pensez a avoir activé le mode developpeur dans les parametres de discord pour obtenir les identifiants*
 
-*Astuce : `DB_SSL`, `DB_SSL_CA` et `DB_POOL_RECYCLE` sont indépendants de l'hébergeur — que la base et le bot
-tournent sur la même machine (VPS) ou séparément (ex: base chez alwaysdata, bot ailleurs), il suffit d'ajuster
-ces variables sans toucher au code.*
+*Astuce : `DB_SSL`, `DB_SSL_CA`, `DB_POOL_RECYCLE`, `DB_POOL_MINSIZE` et `DB_POOL_MAXSIZE` sont indépendants de
+l'hébergeur — que la base et le bot tournent sur la même machine (VPS) ou séparément (ex: base chez alwaysdata,
+bot ailleurs), il suffit d'ajuster ces variables sans toucher au code.*
 
 ### Alertes d'erreur
 
