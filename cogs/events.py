@@ -94,7 +94,7 @@ class Events(commands.Cog):
         except aiomysql.Error as e:
             channel_id = os.getenv("CHANNEL_COMMANDE_ID")
             if not channel_id:
-                logger.error(f"Erreur de base de donnée quand {member.id} a quitté le serveur : {e}")
+                logger.critical(f"Erreur de base de donnée quand {member.id} a quitté le serveur : {e}", exc_info=True)
                 return
             guild = member.guild
             channel = guild.get_channel(int(channel_id))

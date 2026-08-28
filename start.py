@@ -20,11 +20,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from utils.database import create_pool, close_pool, get_pool
+from utils.error_handler import DiscordErrorHandler
 from utils.setupdatabase import init_db
 
 Token = os.getenv("DISCORD_TOKEN")
 if not Token:
     raise RuntimeError("DISCORD_TOKEN non défini")
+
+# Pour les alertes d'erreur en MP (voir utils/error_handler.py). Optionnel :
+# sans OWNER_ID, le bot tourne normalement mais sans alerte proactive.
+OWNER_ID = os.getenv("OWNER_ID")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -245,6 +250,11 @@ async def main():
     # (plusieurs cogs font des requêtes dès leur mise en place).
     pool = await create_pool()
 
+    if OWNER_ID:
+        logging.getLogger().addHandler(DiscordErrorHandler(bot, int(OWNER_ID)))
+    else:
+        logger.warning("OWNER_ID non défini : les alertes d'erreur par MP sont désactivées.")
+
     # Arrêt propre sur SIGTERM (systemd, pm2, docker stop, redéploiement...)
     # et SIGINT (Ctrl+C) : ferme proprement la connexion Discord, ce qui
     # laisse le `finally` ci-dessous fermer aussi le pool MariaDB au lieu de
@@ -267,7 +277,7 @@ async def main():
                     await bot.load_extension(cog)
                     logger.info(f"[Cog] {cog} chargé.")
                 except Exception as e:
-                    logger.error(f"[Cog] ERREUR {cog} : {e}")
+                    logger.critical(f"[Cog] ERREUR {cog} : {e}", exc_info=True)
 
             await bot.start(Token)
     finally:
