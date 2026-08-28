@@ -101,7 +101,7 @@ class AchatSelect(discord.ui.Select):
                             if duration is not None:
                                 expires_at = int(time.time()) + (duration * 86400)
                                 await cursor.execute(
-                                    "INSERT INTO shop_temp_roles (user_id, role_id, end_time) VALUES (%s, %s, %s)",
+                                    "INSERT INTO temp_roles (user_id, role_id, end_time, origin) VALUES (%s, %s, %s, 'shop_purchase')",
                                     (interaction.user.id, role.id, expires_at)
                                 )
                                 logger.info(f"[DB] Rôle temporaire ajouté : user={interaction.user.id}, role={role.id}, expires={expires_at}")
@@ -188,7 +188,10 @@ class BoutiqueCog(commands.Cog):
 
         async with pool.acquire() as conn:
             async with conn.cursor() as c:
-                await c.execute("SELECT id, user_id, role_id FROM shop_temp_roles WHERE end_time <= %s", (now,))
+                await c.execute(
+                    "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'shop_purchase' AND end_time <= %s",
+                    (now,)
+                )
                 expired = await c.fetchall()
 
             if not expired:
@@ -225,7 +228,7 @@ class BoutiqueCog(commands.Cog):
                     except Exception as e:
                         logger.error(f"[check_temp_roles] Erreur pour user={user_id} role={role_id} : {e}")
                     finally:
-                        await c.execute("DELETE FROM shop_temp_roles WHERE id = %s", (row_id,))
+                        await c.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
 
             await conn.commit()
 
