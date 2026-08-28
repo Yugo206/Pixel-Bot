@@ -29,12 +29,6 @@ TABLES = {
         "PRIMARY KEY(user_id, item_id)"
     ],
 
-    "role_temp": [
-        "user_id BIGINT NOT NULL",
-        "role_id BIGINT NOT NULL",
-        "end_time BIGINT NOT NULL"
-    ],
-
     "shop": [
         # VARCHAR (et non TEXT) car cette colonne est la clé primaire : InnoDB a besoin
         # d'une longueur fixe pour indexer une clé.
@@ -90,11 +84,30 @@ TABLES = {
         "warn_created_at BIGINT",
     ],
 
-    "shop_temp_roles": [
+    "temp_roles": [
+        # Fusion des anciennes tables role_temp (période de test staff) et
+        # shop_temp_roles (rôle temporaire acheté en boutique), qui répondaient
+        # au même besoin (rôle à retirer/traiter après end_time) avec un schéma
+        # quasi identique. `origin` distingue les deux comportements attendus
+        # (voir staff_test_watcher dans start.py et check_temp_roles dans
+        # cogs/boutique.py) : 'staff_test' ou 'shop_purchase'.
         "id INT PRIMARY KEY AUTO_INCREMENT",
         "user_id BIGINT NOT NULL",
         "role_id BIGINT NOT NULL",
         "end_time BIGINT NOT NULL",
+        "origin VARCHAR(32) NOT NULL",
+    ],
+
+    "error": [
+        # Historique des erreurs CRITICAL (voir utils/error_handler.py) : alimenté
+        # automatiquement, pour investigation a posteriori sans dépendre des logs.
+        "id INT PRIMARY KEY AUTO_INCREMENT",
+        "created_at BIGINT NOT NULL",
+        "created_at_iso VARCHAR(64) NOT NULL",
+        "level VARCHAR(16) NOT NULL",
+        "source VARCHAR(128) NOT NULL",
+        "message TEXT NOT NULL",
+        "traceback TEXT",
     ],
 }
 
@@ -129,4 +142,34 @@ async def init_db(pool: aiomysql.Pool):
                     if col_name not in existing_columns:
                         await c.execute(f"ALTER TABLE {table} ADD COLUMN {col}")
 
+            # 4️⃣ Migration ponctuelle : d'anciennes tables (role_temp, shop_temp_roles)
+            # ont été fusionnées dans temp_roles (voir ci-dessus). Sans effet une fois
+            # la migration faite, puisque ces tables n'existent plus alors.
+            await _migrate_legacy_temp_roles(c)
+
         await conn.commit()
+
+
+async def _migrate_legacy_temp_roles(c):
+    """Copie les données de role_temp et shop_temp_roles (si elles existent encore)
+    vers temp_roles, puis supprime les anciennes tables. Idempotent : ne fait rien
+    une fois la migration effectuée (les tables n'existent alors plus)."""
+    await c.execute(
+        "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('role_temp', 'shop_temp_roles')"
+    )
+    legacy_tables = {row[0] for row in await c.fetchall()}
+
+    if "role_temp" in legacy_tables:
+        await c.execute(
+            "INSERT INTO temp_roles (user_id, role_id, end_time, origin) "
+            "SELECT user_id, role_id, end_time, 'staff_test' FROM role_temp"
+        )
+        await c.execute("DROP TABLE role_temp")
+
+    if "shop_temp_roles" in legacy_tables:
+        await c.execute(
+            "INSERT INTO temp_roles (user_id, role_id, end_time, origin) "
+            "SELECT user_id, role_id, end_time, 'shop_purchase' FROM shop_temp_roles"
+        )
+        await c.execute("DROP TABLE shop_temp_roles")

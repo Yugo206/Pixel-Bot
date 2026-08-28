@@ -3,24 +3,53 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import asyncio
+import logging
 import os
 import signal
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Niveau configurable via .env (LOG_LEVEL=DEBUG/INFO/WARNING/...) pour rester
+# modulable selon l'environnement (dev en local, prod sur alwaysdata/VPS...).
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
 from utils.database import create_pool, close_pool, get_pool
+from utils.error_handler import DiscordErrorHandler
 from utils.setupdatabase import init_db
 
 Token = os.getenv("DISCORD_TOKEN")
 if not Token:
     raise RuntimeError("DISCORD_TOKEN non défini")
 
-intents = discord.Intents.default()
-intents.message_content = True
-intents.members = True  # nécessaire pour on_member_join/on_member_remove et fetch_member
+# Pour les alertes d'erreur en MP (voir utils/error_handler.py). Optionnel :
+# sans OWNER_ID, le bot tourne normalement mais sans alerte proactive.
+OWNER_ID = os.getenv("OWNER_ID")
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents = discord.Intents.none()
+intents.guilds = True  # cœur : accès aux serveurs, salons, threads
+intents.guild_messages = True  # on_message (XP, suivi des tickets, préfixe !)
+intents.message_content = True  # lecture du contenu (commandes préfixées, wait_for)
+intents.members = True  # nécessaire pour on_member_join/on_member_remove et fetch_member
+# Intents.default() active aussi reactions/typing/voice/invites/webhooks/emojis/
+# scheduled_events/auto_moderation etc., qu'aucun cog n'utilise (vérifié : pas
+# d'écouteur on_reaction/on_typing, pas de PyNaCl/voix, pas de wait_for en DM).
+# Les laisser désactivées réduit le volume d'évènements gateway à traiter — utile
+# vu le quota RAM/CPU limité sur alwaysdata.
+
+bot = commands.Bot(
+    command_prefix="!",
+    intents=intents,
+    # Cache interne des messages (édition/suppression) inutilisé par le bot
+    # (aucun on_message_edit/on_message_delete, aucun get_message) : le désactiver
+    # évite de garder ~1000 objets Message en mémoire pour rien.
+    max_messages=None,
+)
 
 
 @tasks.loop(seconds=120)
@@ -94,7 +123,7 @@ async def ticket_watcher():
                         WHERE thread_id = %s
                         """, (now, thread_id))
                 except Exception as e:
-                    print(f"[ticket_watcher] Erreur sur le ticket {thread_id} : {e}")
+                    logger.error(f"[ticket_watcher] Erreur sur le ticket {thread_id} : {e}")
 
         await conn.commit()
 
@@ -117,16 +146,13 @@ async def staff_test_watcher():
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("""
-            SELECT user_id, role_id, end_time
-            FROM role_temp
-            """)
+            await cur.execute(
+                "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'staff_test' AND end_time <= %s",
+                (now,)
+            )
             rows = await cur.fetchall()
 
-            for user_id, role_id, end_time in rows:
-                if now < end_time:
-                    continue
-
+            for row_id, user_id, role_id in rows:
                 try:
                     if not guild_id:
                         continue
@@ -140,7 +166,7 @@ async def staff_test_watcher():
                         try:
                             member = await guild.fetch_member(user_id)
                         except discord.NotFound:
-                            await cur.execute("DELETE FROM role_temp WHERE user_id = %s", (user_id,))
+                            await cur.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
                             continue
 
                     if not channel_id:
@@ -162,14 +188,14 @@ async def staff_test_watcher():
                     await staff_channel.send(embed=embed)
 
                     # On supprime l'entrée pour éviter de redemander
-                    await cur.execute("DELETE FROM role_temp WHERE user_id = %s", (user_id,))
+                    await cur.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
                 except Exception as e:
-                    print(f"[staff_test_watcher] Erreur pour l'utilisateur {user_id} : {e}")
+                    logger.error(f"[staff_test_watcher] Erreur pour l'utilisateur {user_id} : {e}")
 
         await conn.commit()
 
 
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=60)
 async def cycle_status():
     activities = [
         discord.Game("Anime Pixel Party"),
@@ -188,7 +214,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     elif isinstance(error, app_commands.CommandOnCooldown):
         message = f"⏳ Cette commande est en cooldown, réessaie dans {error.retry_after:.0f}s."
     else:
-        print(f"[Erreur commande] /{interaction.command.name if interaction.command else '?'} : {error}")
+        logger.error(f"[Erreur commande] /{interaction.command.name if interaction.command else '?'} : {error}")
         message = "❌ Une erreur inattendue est survenue en exécutant cette commande."
 
     try:
@@ -202,7 +228,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 @bot.event
 async def on_ready():
-    print(f"Connecté en tant que {bot.user}")
+    logger.info(f"Connecté en tant que {bot.user}")
     if not hasattr(bot, "synced"):
         await bot.tree.sync()
         bot.synced = True
@@ -235,6 +261,11 @@ async def main():
     # (plusieurs cogs font des requêtes dès leur mise en place).
     pool = await create_pool()
 
+    if OWNER_ID:
+        logging.getLogger().addHandler(DiscordErrorHandler(bot, int(OWNER_ID)))
+    else:
+        logger.warning("OWNER_ID non défini : les alertes d'erreur par MP sont désactivées.")
+
     # Arrêt propre sur SIGTERM (systemd, pm2, docker stop, redéploiement...)
     # et SIGINT (Ctrl+C) : ferme proprement la connexion Discord, ce qui
     # laisse le `finally` ci-dessous fermer aussi le pool MariaDB au lieu de
@@ -255,9 +286,9 @@ async def main():
             for cog in COGS:
                 try:
                     await bot.load_extension(cog)
-                    print(f"[Cog] {cog} chargé.")
+                    logger.info(f"[Cog] {cog} chargé.")
                 except Exception as e:
-                    print(f"[Cog] ERREUR {cog} :", e)
+                    logger.critical(f"[Cog] ERREUR {cog} : {e}", exc_info=True)
 
             await bot.start(Token)
     finally:
@@ -268,4 +299,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot arrêté.")
+        logger.info("Bot arrêté.")

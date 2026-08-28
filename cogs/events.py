@@ -1,3 +1,4 @@
+import logging
 import time
 from discord.ext import commands
 import aiomysql
@@ -14,6 +15,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from utils.database import get_pool
+
+logger = logging.getLogger(__name__)
 
 MENTION_RESPONSES = [
     "Salut, moi c'est Pixel Bot!",
@@ -58,7 +61,7 @@ class Events(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        print("Bot démarré")
+        logger.info("Bot démarré")
         try:
             self.bot.add_view(TicketCreateView())
             self.bot.add_view(FermerView())
@@ -78,7 +81,7 @@ class Events(commands.Cog):
             self.bot.add_view(VisiteGuidee(2))
             self.bot.add_view(VisiteGuidee(5))
         except Exception as e:
-            print(e)
+            logger.error(f"[on_ready] Erreur lors de l'enregistrement des vues persistantes : {e}")
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
@@ -91,7 +94,7 @@ class Events(commands.Cog):
         except aiomysql.Error as e:
             channel_id = os.getenv("CHANNEL_COMMANDE_ID")
             if not channel_id:
-                print(f"Erreur de base de donnée quand **{member.id}** a quitté le serveur : {e}")
+                logger.critical(f"Erreur de base de donnée quand {member.id} a quitté le serveur : {e}", exc_info=True)
                 return
             guild = member.guild
             channel = guild.get_channel(int(channel_id))

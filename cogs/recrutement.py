@@ -1,12 +1,15 @@
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+import logging
 import os
 import aiomysql
 load_dotenv()
 from utils.database import get_pool
 from utils.sanctions import get_modo_channel
 import time
+
+logger = logging.getLogger(__name__)
 
 
 class RaisonModal(discord.ui.Modal, title="Raison du refus"):
@@ -134,7 +137,7 @@ class Accepterview(discord.ui.View):
             async with conn.cursor() as cursor:
                 time_end = int(time.time()) + 7 * 24 * 3600
                 await cursor.execute(
-                    "INSERT INTO role_temp (user_id, role_id, end_time) VALUES (%s, %s, %s)",
+                    "INSERT INTO temp_roles (user_id, role_id, end_time, origin) VALUES (%s, %s, %s, 'staff_test')",
                     (user_id, role.id if role else role_id, int(time_end))
                 )
             await conn.commit()
@@ -212,7 +215,7 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
 
 
         except Exception as e:
-            print("💥 ERREUR MODAL :", e)
+            logger.error(f"💥 ERREUR MODAL : {e}")
             await interaction.followup.send(f"Erreur : {e}", ephemeral=True)
 
 
