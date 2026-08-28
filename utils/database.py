@@ -1,9 +1,27 @@
 import os
+import ssl
 
 import aiomysql
 from pymysql.constants import CLIENT
 
 _pool: aiomysql.Pool | None = None
+
+
+def _build_ssl_context() -> ssl.SSLContext | None:
+    """Contexte SSL pour la connexion à MariaDB, activé uniquement si DB_SSL=true.
+
+    Désactivé par défaut : une base locale ou sur le même serveur que le bot
+    (réseau interne / socket) n'en a généralement pas besoin. À activer
+    explicitement pour un hébergeur distant qui l'exige (ex: alwaysdata),
+    sans rien changer au code — juste la variable d'env DB_SSL. DB_SSL_CA
+    permet de fournir un certificat CA custom si l'hébergeur en a besoin ;
+    sinon le magasin de confiance système est utilisé.
+    """
+    if os.getenv("DB_SSL", "false").strip().lower() not in ("1", "true", "yes", "on"):
+        return None
+
+    ca_path = os.getenv("DB_SSL_CA")
+    return ssl.create_default_context(cafile=ca_path) if ca_path else ssl.create_default_context()
 
 
 async def create_pool() -> aiomysql.Pool:
@@ -22,6 +40,12 @@ async def create_pool() -> aiomysql.Pool:
         autocommit=False,
         minsize=1,
         maxsize=10,
+        ssl=_build_ssl_context(),
+        # Recycle les connexions inactives avant que le serveur (souvent plus
+        # agressif sur de l'hébergement mutualisé) ne les ferme lui-même côté
+        # TCP — évite les "MySQL server has gone away" sur un bot qui tourne
+        # longtemps sans requêtes. Réglable via DB_POOL_RECYCLE (secondes).
+        pool_recycle=int(os.getenv("DB_POOL_RECYCLE", "1800")),
         # FOUND_ROWS : cursor.rowcount reflète les lignes correspondant au WHERE
         # (comme sqlite3), et non seulement celles dont la valeur a effectivement changé.
         # Important pour les UPDATE conditionnels utilisés comme vérification atomique
