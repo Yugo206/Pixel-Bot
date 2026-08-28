@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 import aiomysql
+import logging
 import os
 from datetime import datetime, timezone
 import time
@@ -9,6 +10,8 @@ from dotenv import load_dotenv
 load_dotenv()
 from utils.database import get_pool
 from utils.sanctions import apply_warn_sanction, get_modo_channel
+
+logger = logging.getLogger(__name__)
 
 
 class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
@@ -121,7 +124,7 @@ class RefuseroracceptercontestationView(discord.ui.View):
 
             await interaction.followup.send("Sanction retirée ✅", ephemeral=True)
         except Exception as e:
-            print(f"[warn:accepter] {e}")
+            logger.error(f"[warn:accepter] {e}")
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -157,7 +160,7 @@ class RefuseroracceptercontestationView(discord.ui.View):
                 child.disabled = True
             await interaction.message.edit(view=self)
         except Exception as e:
-            print(f"[warn:refuser] {e}")
+            logger.error(f"[warn:refuser] {e}")
 
 
 class ContestationModal(discord.ui.Modal, title="Contestation"):
@@ -321,7 +324,7 @@ class Warn(commands.Cog):
 
                 await conn.commit()
         except aiomysql.Error as e:
-            print(e)
+            logger.error(f"[warn] Erreur DB : {e}")
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
 

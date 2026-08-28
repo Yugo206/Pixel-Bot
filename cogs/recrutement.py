@@ -1,12 +1,15 @@
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+import logging
 import os
 import aiomysql
 load_dotenv()
 from utils.database import get_pool
 from utils.sanctions import get_modo_channel
 import time
+
+logger = logging.getLogger(__name__)
 
 
 class RaisonModal(discord.ui.Modal, title="Raison du refus"):
@@ -212,7 +215,7 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
 
 
         except Exception as e:
-            print("💥 ERREUR MODAL :", e)
+            logger.error(f"💥 ERREUR MODAL : {e}")
             await interaction.followup.send(f"Erreur : {e}", ephemeral=True)
 
 

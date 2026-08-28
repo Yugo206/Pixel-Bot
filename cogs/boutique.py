@@ -2,11 +2,14 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import aiomysql
+import logging
 import time
 import os
 from dotenv import load_dotenv
 load_dotenv()
 from utils.database import get_pool
+
+logger = logging.getLogger(__name__)
 
 
 class AchatSelect(discord.ui.Select):
@@ -101,7 +104,7 @@ class AchatSelect(discord.ui.Select):
                                     "INSERT INTO shop_temp_roles (user_id, role_id, end_time) VALUES (%s, %s, %s)",
                                     (interaction.user.id, role.id, expires_at)
                                 )
-                                print(f"[DB] Rôle temporaire ajouté : user={interaction.user.id}, role={role.id}, expires={expires_at}")
+                                logger.info(f"[DB] Rôle temporaire ajouté : user={interaction.user.id}, role={role.id}, expires={expires_at}")
 
                             await conn.commit()
                             await interaction.followup.send(
@@ -155,7 +158,7 @@ class AchatSelect(discord.ui.Select):
                         return
 
         except aiomysql.Error as e:
-            print(f"Erreur SQL achat: {e}")
+            logger.error(f"Erreur SQL achat : {e}")
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
 
@@ -220,7 +223,7 @@ class BoutiqueCog(commands.Cog):
                                     except discord.Forbidden:
                                         pass
                     except Exception as e:
-                        print(f"[check_temp_roles] Erreur pour user={user_id} role={role_id} : {e}")
+                        logger.error(f"[check_temp_roles] Erreur pour user={user_id} role={role_id} : {e}")
                     finally:
                         await c.execute("DELETE FROM shop_temp_roles WHERE id = %s", (row_id,))
 
@@ -247,7 +250,7 @@ class BoutiqueCog(commands.Cog):
                     await cursor.execute("SELECT name, price, type, valeur, duration FROM shop")
                     items = await cursor.fetchall()
         except aiomysql.Error as e:
-            print("ERREUR SQL !!! L'erreur est : ", e)
+            logger.error(f"Erreur SQL boutique : {e}")
 
         if not items:
             embed.description = "❌ Boutique vide"

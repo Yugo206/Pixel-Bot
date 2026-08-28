@@ -3,11 +3,21 @@ import discord
 from discord.ext import commands, tasks
 from discord import app_commands
 import asyncio
+import logging
 import os
 import signal
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Niveau configurable via .env (LOG_LEVEL=DEBUG/INFO/WARNING/...) pour rester
+# modulable selon l'environnement (dev en local, prod sur alwaysdata/VPS...).
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 from utils.database import create_pool, close_pool, get_pool
 from utils.setupdatabase import init_db
@@ -94,7 +104,7 @@ async def ticket_watcher():
                         WHERE thread_id = %s
                         """, (now, thread_id))
                 except Exception as e:
-                    print(f"[ticket_watcher] Erreur sur le ticket {thread_id} : {e}")
+                    logger.error(f"[ticket_watcher] Erreur sur le ticket {thread_id} : {e}")
 
         await conn.commit()
 
@@ -164,7 +174,7 @@ async def staff_test_watcher():
                     # On supprime l'entrée pour éviter de redemander
                     await cur.execute("DELETE FROM role_temp WHERE user_id = %s", (user_id,))
                 except Exception as e:
-                    print(f"[staff_test_watcher] Erreur pour l'utilisateur {user_id} : {e}")
+                    logger.error(f"[staff_test_watcher] Erreur pour l'utilisateur {user_id} : {e}")
 
         await conn.commit()
 
@@ -188,7 +198,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
     elif isinstance(error, app_commands.CommandOnCooldown):
         message = f"⏳ Cette commande est en cooldown, réessaie dans {error.retry_after:.0f}s."
     else:
-        print(f"[Erreur commande] /{interaction.command.name if interaction.command else '?'} : {error}")
+        logger.error(f"[Erreur commande] /{interaction.command.name if interaction.command else '?'} : {error}")
         message = "❌ Une erreur inattendue est survenue en exécutant cette commande."
 
     try:
@@ -202,7 +212,7 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 @bot.event
 async def on_ready():
-    print(f"Connecté en tant que {bot.user}")
+    logger.info(f"Connecté en tant que {bot.user}")
     if not hasattr(bot, "synced"):
         await bot.tree.sync()
         bot.synced = True
@@ -255,9 +265,9 @@ async def main():
             for cog in COGS:
                 try:
                     await bot.load_extension(cog)
-                    print(f"[Cog] {cog} chargé.")
+                    logger.info(f"[Cog] {cog} chargé.")
                 except Exception as e:
-                    print(f"[Cog] ERREUR {cog} :", e)
+                    logger.error(f"[Cog] ERREUR {cog} : {e}")
 
             await bot.start(Token)
     finally:
@@ -268,4 +278,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Bot arrêté.")
+        logger.info("Bot arrêté.")
