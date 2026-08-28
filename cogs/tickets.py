@@ -1,4 +1,5 @@
 import aiomysql
+import logging
 import time
 import discord
 from discord.ext import commands
@@ -10,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from cogs.warn import ContestationView
 from utils.database import get_pool
 from utils.sanctions import apply_warn_sanction, get_modo_channel
+
+logger = logging.getLogger(__name__)
 
 # ID à contacter en cas d'erreur DB critique (avant : codé en dur dans le fichier).
 OWNER_ID = os.getenv("OWNER_ID")
@@ -113,7 +116,7 @@ class ModoView(discord.ui.View):
                     )
                     result = await c.fetchone()
         except aiomysql.Error as e:
-            print(e)
+            logger.error(f"[tickets:prendre] Erreur DB : {e}")
             await interaction.followup.send(f"ERREUR DB : Contacte {_owner_mention()} pour resoudre le probleme", ephemeral=True)
             return
 
@@ -156,7 +159,7 @@ class ModoView(discord.ui.View):
                         (interaction.user.id, 2, thread_id))
                 await conn.commit()
         except aiomysql.Error as e:
-            print(e)
+            logger.error(f"[tickets:prendre] Erreur DB update : {e}")
 
 
 class SatisfactionView(discord.ui.View):
@@ -237,7 +240,7 @@ class SatisfactionView(discord.ui.View):
                 await conn.commit()
 
         except aiomysql.Error as e:
-            print(f"Erreur SQL: {e}")
+            logger.error(f"[tickets:avis] Erreur SQL : {e}")
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
 
@@ -253,9 +256,9 @@ class SatisfactionView(discord.ui.View):
             view = ContestationView(membre, bot, warn_id)
             await membre.send(embed=embed, view=view)
         except discord.Forbidden:
-            print(f"Impossible d'envoyer un DM à {membre}")
+            logger.warning(f"Impossible d'envoyer un DM à {membre}")
         except Exception as e:
-            print(f"Erreur envoi DM: {e}")
+            logger.error(f"Erreur envoi DM : {e}")
 
         await self._disable_and_respond(interaction)
 
@@ -286,7 +289,7 @@ class SatisfactionView(discord.ui.View):
         try:
             await interaction.edit_original_response(view=self)
         except discord.HTTPException as e:
-            print(f"Erreur lors de la désactivation: {e}")
+            logger.error(f"Erreur lors de la désactivation : {e}")
 
 
 class FermerView(discord.ui.View):
@@ -345,7 +348,7 @@ class FermerView(discord.ui.View):
                     )
                 await conn.commit()
         except aiomysql.Error as e:
-            print(e)
+            logger.error(f"[tickets:fermer] Erreur DB : {e}")
 
 
 class TicketCreateView(discord.ui.View):
@@ -386,7 +389,7 @@ class TicketCreateView(discord.ui.View):
         channel = await get_modo_channel(interaction.client, interaction.guild)
         messsages = None
         if channel is None:
-            print("PAS DE CHANNEL DE MODERATION TROUVÉ (CHANNEL_MODO_ID) !")
+            logger.warning("Aucun salon de modération trouvé (CHANNEL_MODO_ID non configuré ou introuvable).")
         else:
             embed2 = discord.Embed(title="Ticket ouvert !", description="Clique sur le boutton ci-dessous pour acceder au ticket et le prendre en charge.", colour=discord.Colour.blue())
             messsages = await channel.send(embed=embed2, view=ModoView())
@@ -403,7 +406,7 @@ class TicketCreateView(discord.ui.View):
                     )
                 await conn.commit()
         except aiomysql.Error as e:
-            print(e)
+            logger.error(f"[tickets:create] Erreur DB : {e}")
 
         if raison == "Partenariat":
             embed_partenariat_intro = discord.Embed(title="Bienvenue sur ton ticket partenariat !",
