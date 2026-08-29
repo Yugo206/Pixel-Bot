@@ -289,7 +289,6 @@ COGS = [
     "cogs.tickets",
     "cogs.events",
     "cogs.trade",
-    "cogs.visite",
     "cogs.setupticket",
     "cogs.warn",
     "cogs.recrutement",

@@ -8,7 +8,6 @@ import discord
 from cogs.setupticket import TicketCreateView
 from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView, ConfirmationClotureView
 from cogs.trade import TradeView
-from cogs.visite import VisiteGuidee
 from cogs.warn import RefuseroracceptercontestationView
 from cogs.recrutement import ConditionsSelect, FormulaireBouton
 from dotenv import load_dotenv
@@ -77,11 +76,6 @@ class Events(commands.Cog):
             self.bot.add_view(FormulaireBouton())
             self.bot.add_view(TradeView())
             self.bot.add_view(RefuseroracceptercontestationView())
-            # Les custom_id des boutons de VisiteGuidee dépendent de l'étape :
-            # on enregistre les 3 configurations possibles pour couvrir tous les boutons.
-            self.bot.add_view(VisiteGuidee(1))
-            self.bot.add_view(VisiteGuidee(2))
-            self.bot.add_view(VisiteGuidee(5))
         except Exception as e:
             logger.error(f"[on_ready] Erreur lors de l'enregistrement des vues persistantes : {e}")
 
@@ -174,26 +168,15 @@ class Events(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
+        # L'accueil (questions/rôles) passe désormais par l'onboarding natif Discord
+        # (Server Settings > Onboarding) — plus d'envoi de MP ici, qui échouait
+        # silencieusement pour les membres ayant fermé leurs messages privés.
         if member.id in BLACKLIST:
             try:
                 await member.send("Tu as été blacklisté du serveur. Kick immediat.")
             except discord.Forbidden:
                 pass
             await member.kick(reason="Membre blacklisté")
-            return
-
-        embed = discord.Embed(
-            title="👋 Bienvenue !",
-            description=f"Salut {member.mention} ! Prêt pour la visite du serveur ?",
-            color=discord.Color.blurple(),
-        )
-
-        view = VisiteGuidee(1)
-
-        try:
-            await member.send(embed=embed, view=view)
-        except discord.Forbidden:
-            pass
 
 
 async def setup(bot):
