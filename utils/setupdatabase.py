@@ -105,6 +105,17 @@ TABLES = {
         "origin VARCHAR(32) NOT NULL",
     ],
 
+    "profil_extra": [
+        # Réponses libres du bouton "Personnaliser mon profil" (voir cogs/profile.py :
+        # JEUX_PLATEFORMES). `cle` identifie la question (ex: 'psn', 'fortnite_niveau'),
+        # une ligne par question répondue — évite une colonne par jeu/plateforme dans
+        # `utilisateurs`, qui serait presque toujours NULL pour la plupart des membres.
+        "user_id BIGINT NOT NULL",
+        "cle VARCHAR(32) NOT NULL",
+        "valeur VARCHAR(255) NOT NULL",
+        "PRIMARY KEY(user_id, cle)"
+    ],
+
     "error": [
         # Historique des erreurs CRITICAL (voir utils/error_handler.py) : alimenté
         # automatiquement, pour investigation a posteriori sans dépendre des logs.

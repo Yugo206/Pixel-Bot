@@ -1,3 +1,4 @@
+import os
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -12,6 +13,148 @@ from utils import cache
 # SQL (même principe que ajouter_rarete dans utils/database.py), même si les choix sont
 # déjà imposés côté client par app_commands.choices.
 COLONNES_CLASSEMENT = {"argent", "xp"}
+
+# Jeux/plateformes détectables via rôle pour le bouton "Personnaliser mon profil"
+# (voir PersonnaliserButton). Chaque entrée : le rôle qui déclenche la proposition
+# (variable d'env, optionnelle — absente = jeu désactivé sur ce serveur), et les
+# questions fixes posées dans le modal ((clé DB, libellé affiché), ...).
+# iPhone/Android volontairement exclus : ce sont des rôles d'appareil, pas de jeu,
+# aucune question évidente à poser dessus.
+JEUX_PLATEFORMES = [
+    {"id": "pc", "label": "🖥️ PC", "role_env": "ROLE_PC",
+     "questions": [("pc_pseudo", "Pseudo Steam / Battle.net / Epic")]},
+    {"id": "xbox", "label": "🎮 Xbox", "role_env": "ROLE_XBOX",
+     "questions": [("xbox_gamertag", "Gamertag Xbox")]},
+    {"id": "playstation", "label": "🎮 PlayStation", "role_env": "ROLE_PLAYSTATION",
+     "questions": [("psn", "Pseudo PSN")]},
+    {"id": "nintendo", "label": "🎮 Nintendo", "role_env": "ROLE_NINTENDO",
+     "questions": [("switch_code", "Code ami Switch")]},
+    {"id": "fortnite", "label": "🔫 Fortnite", "role_env": "ROLE_FORTNITE",
+     "questions": [("fortnite_niveau", "Ton niveau Fortnite")]},
+    {"id": "minecraft", "label": "⛏️ Minecraft", "role_env": "ROLE_MINECRAFT",
+     "questions": [("minecraft_pseudo", "Pseudo Minecraft")]},
+    {"id": "brawlstars", "label": "⭐ Brawl Stars", "role_env": "ROLE_BRAWLSTARS",
+     "questions": [("brawlstars_tag", "Tag Brawl Stars (#XXXXXXX)")]},
+    {"id": "gta", "label": "🚗 GTA", "role_env": "ROLE_GTA",
+     "questions": [("gta_pseudo", "Pseudo GTA / Rockstar Social Club")]},
+    {"id": "roblox", "label": "🧱 Roblox", "role_env": "ROLE_ROBLOX",
+     "questions": [("roblox_pseudo", "Pseudo Roblox"),
+                   ("roblox_frequence", "Tu joues souvent ? (rarement / parfois / souvent)")]},
+]
+
+# Reverse-map clé DB -> libellé, pour afficher les réponses sur /profil sans reparcourir
+# JEUX_PLATEFORMES à chaque fois.
+CLE_LABELS = {cle: label for jeu in JEUX_PLATEFORMES for cle, label in jeu["questions"]}
+
+
+def _jeux_disponibles(member: discord.Member) -> list:
+    """Renvoie les jeux/plateformes de JEUX_PLATEFORMES configurés (variable d'env
+    définie) et dont `member` possède le rôle correspondant."""
+    disponibles = []
+    for jeu in JEUX_PLATEFORMES:
+        role_id_raw = os.getenv(jeu["role_env"])
+        if not role_id_raw:
+            continue
+        role = member.guild.get_role(int(role_id_raw))
+        if role is not None and role in member.roles:
+            disponibles.append(jeu)
+    return disponibles
+
+
+class JeuModal(discord.ui.Modal):
+    def __init__(self, jeu: dict, valeurs_existantes: dict):
+        super().__init__(title=f"Personnalisation — {jeu['label']}")
+        self.champs = []
+        for cle, label in jeu["questions"]:
+            champ = discord.ui.TextInput(
+                label=label,
+                required=False,
+                max_length=100,
+                default=valeurs_existantes.get(cle)
+            )
+            self.champs.append((cle, champ))
+            self.add_item(champ)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                for cle, champ in self.champs:
+                    valeur = champ.value.strip() if champ.value else ""
+                    if valeur:
+                        await cursor.execute(
+                            "INSERT INTO profil_extra (user_id, cle, valeur) VALUES (%s, %s, %s) "
+                            "ON DUPLICATE KEY UPDATE valeur = VALUES(valeur)",
+                            (interaction.user.id, cle, valeur)
+                        )
+                    else:
+                        # Champ vidé volontairement : on supprime plutôt que de garder une
+                        # valeur vide, pour que le champ disparaisse de /profil.
+                        await cursor.execute(
+                            "DELETE FROM profil_extra WHERE user_id = %s AND cle = %s",
+                            (interaction.user.id, cle)
+                        )
+            await conn.commit()
+        await interaction.followup.send("✅ Ton profil a été mis à jour !", ephemeral=True)
+
+
+class JeuButton(discord.ui.Button):
+    def __init__(self, jeu: dict):
+        super().__init__(label=jeu["label"], style=discord.ButtonStyle.blurple)
+        self.jeu = jeu
+
+    async def callback(self, interaction: discord.Interaction):
+        cles = [cle for cle, _ in self.jeu["questions"]]
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                placeholders = ",".join(["%s"] * len(cles))
+                await cursor.execute(
+                    f"SELECT cle, valeur FROM profil_extra WHERE user_id = %s AND cle IN ({placeholders})",
+                    (interaction.user.id, *cles)
+                )
+                valeurs_existantes = dict(await cursor.fetchall())
+        await interaction.response.send_modal(JeuModal(self.jeu, valeurs_existantes))
+
+
+class PersonnalisationView(discord.ui.View):
+    def __init__(self, jeux: list):
+        super().__init__(timeout=180)
+        for jeu in jeux:
+            self.add_item(JeuButton(jeu))
+
+
+class PersonnaliserButton(discord.ui.View):
+    """Bouton attaché à /profil. Agit toujours sur qui clique (interaction.user), pas
+    sur le propriétaire du profil affiché — même principe que AchatSelect dans
+    cogs/boutique.py, partagé entre tous les viewers d'un même message public."""
+    def __init__(self):
+        super().__init__(timeout=180)
+
+    @discord.ui.button(label="🎮 Personnaliser mon profil", style=discord.ButtonStyle.blurple)
+    async def personnaliser(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Cette fonctionnalité n'est disponible que sur le serveur.", ephemeral=True
+            )
+            return
+
+        jeux = _jeux_disponibles(interaction.user)
+        if not jeux:
+            await interaction.response.send_message(
+                "Tu n'as aucun rôle jeu/plateforme pour l'instant. Choisis-en d'abord via "
+                "l'accueil du serveur pour pouvoir personnaliser ton profil !",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            "Choisis quel jeu/plateforme tu veux renseigner :",
+            view=PersonnalisationView(jeux),
+            ephemeral=True
+        )
+
 
 class Profile(commands.Cog):
     def __init__(self, bot):
@@ -36,16 +179,22 @@ class Profile(commands.Cog):
             async with conn.cursor() as cursor:
                 await cursor.execute("SELECT argent, xp FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                 result = await cursor.fetchone()
+                await cursor.execute("SELECT cle, valeur FROM profil_extra WHERE user_id = %s", (interaction.user.id,))
+                extra = await cursor.fetchall()
         argent = result[0] if result and result[0] is not None else 0
         xp = result[1] if result and result[1] is not None else 0
         embed.add_field(name="Argent :", value=f"{argent} €", inline=False)
         embed.add_field(name="Experience :", value=f"{xp}", inline=False)
         nv = self.get_level(xp)
         embed.add_field(name="Niveau :", value=f"{nv}", inline=False)
+        if extra:
+            texte = "\n".join(f"**{CLE_LABELS.get(cle, cle)}** : {valeur}" for cle, valeur in extra)
+            embed.add_field(name="🎮 Jeux & plateformes :", value=texte, inline=False)
+        view = PersonnaliserButton() if interaction.guild is not None else None
         if interaction.response.is_done():
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, view=view)
         else:
-            await interaction.response.send_message(embed=embed)
+            await interaction.response.send_message(embed=embed, view=view)
 
     @app_commands.command(name="argent", description="Afficher ton solde d'argent")
     async def argent(self, interaction: discord.Interaction):
