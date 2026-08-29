@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from utils.database import get_pool
+from utils import cache
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,11 @@ class AchatSelect(discord.ui.Select):
                                 (valeur, interaction.user.id)
                             )
                             await conn.commit()
+                            # Écriture SQL directe sur xp en dehors du cache (utils/cache.py) :
+                            # on invalide plutôt que de tenter de le mettre à jour ici, pour ne
+                            # pas dupliquer la logique — la prochaine lecture (au message
+                            # suivant) revient chercher la vraie valeur en base.
+                            cache.invalidate_xp(interaction.user.id)
                             await interaction.followup.send(
                                 f"🛒 **Achat réussi !**\n\n📦 Objet : **{name}**\n💰 Prix : **{price} €**",
                                 ephemeral=True
