@@ -292,6 +292,132 @@ class SatisfactionView(discord.ui.View):
             logger.error(f"Erreur lors de la désactivation : {e}")
 
 
+class ConfirmationClotureView(discord.ui.View):
+    """Envoyée en MP au modérateur assigné quand un ticket est fermé automatiquement
+    pour inactivité (voir ticket_watcher dans start.py). Contrairement à
+    SatisfactionView (déclenchée par un clic sur "Fermer le ticket"), il n'y a ici
+    aucune interaction d'origine à qui répondre ephemeral : le lien vers le ticket
+    concerné passe par `ticket.mod_dm_message_id` plutôt que par le salon."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.select(
+        placeholder="Comment s'est passé ce ticket ?",
+        options=[
+            discord.SelectOption(label="Super bien !", description="Le ticket s'est bien passé", emoji="🙂"),
+            discord.SelectOption(label="Mal", description="Le membre a mal agi, il faut reprendre la main dessus", emoji="😕"),
+            discord.SelectOption(label="Pas de reponse", description="Le membre n'a jamais répondu, il faut relancer", emoji="🚫"),
+        ],
+        custom_id="ticket:confirmation_cloture_auto"
+    )
+    async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
+        await interaction.response.defer(ephemeral=True)
+
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as c:
+                await c.execute(
+                    "SELECT thread_id FROM ticket WHERE mod_dm_message_id = %s",
+                    (interaction.message.id,)
+                )
+                row = await c.fetchone()
+
+        if row is None:
+            await interaction.followup.send(
+                "❌ Ce ticket n'est plus associé à ce message (déjà traité, ou supprimé).",
+                ephemeral=True
+            )
+            return
+
+        thread_id = row[0]
+
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.edit_original_response(view=self)
+        except discord.HTTPException as e:
+            logger.error(f"[tickets:confirmation_cloture] Erreur désactivation select : {e}")
+
+        # Cas positif : rien à rouvrir, on s'arrête là.
+        if select.values[0] == "Super bien !":
+            await interaction.followup.send("Merci pour ton retour !", ephemeral=True)
+            return
+
+        # Cas négatifs ("Mal" / "Pas de reponse") : le ticket est rouvert pour que
+        # le modérateur reprenne la main dessus.
+        try:
+            thread = interaction.client.get_channel(thread_id) or await interaction.client.fetch_channel(thread_id)
+        except discord.NotFound:
+            await interaction.followup.send(
+                "❌ Le ticket a été supprimé entre-temps, impossible de le rouvrir.",
+                ephemeral=True
+            )
+            return
+
+        await thread.edit(archived=False, locked=False)
+        await thread.send(
+            f"🔓 Ce ticket a été rouvert par {interaction.user.mention} suite à la fermeture automatique pour inactivité."
+        )
+
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "UPDATE ticket SET statut = 2, closed_at = NULL WHERE thread_id = %s",
+                        (thread_id,)
+                    )
+                await conn.commit()
+        except aiomysql.Error as e:
+            logger.critical(f"[tickets:confirmation_cloture] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send(
+                "⚠️ Ticket rouvert sur Discord mais erreur DB à l'enregistrement, contacte "
+                f"{_owner_mention()}.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(f"Ticket rouvert : {thread.mention}", ephemeral=True)
+
+
+async def demander_confirmation_moderateur(bot, thread: discord.Thread, modo_id: int):
+    """MP le modérateur assigné à un ticket fermé automatiquement pour inactivité,
+    pour lui demander si tout s'est bien passé (et lui permettre de rouvrir le
+    ticket sinon). Appelé par ticket_watcher (start.py) après la fermeture."""
+    try:
+        modo = bot.get_user(modo_id) or await bot.fetch_user(modo_id)
+    except discord.NotFound:
+        logger.warning(f"[tickets:confirmation] Modérateur {modo_id} introuvable (ticket {thread.id}).")
+        return
+
+    embed = discord.Embed(
+        title="Ticket fermé automatiquement",
+        description=(
+            f"Le ticket {thread.mention} a été fermé pour inactivité (72h sans réponse "
+            "du membre). Comment s'est-il passé ?"
+        ),
+        colour=discord.Colour.orange()
+    )
+
+    try:
+        message = await modo.send(embed=embed, view=ConfirmationClotureView())
+    except discord.Forbidden:
+        logger.warning(f"[tickets:confirmation] MP impossible à {modo_id} (ticket {thread.id}) : DMs fermés.")
+        return
+
+    try:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as c:
+                await c.execute(
+                    "UPDATE ticket SET mod_dm_message_id = %s WHERE thread_id = %s",
+                    (message.id, thread.id)
+                )
+            await conn.commit()
+    except aiomysql.Error as e:
+        logger.critical(f"[tickets:confirmation] Erreur DB : {e}", exc_info=True)
+
+
 class FermerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)

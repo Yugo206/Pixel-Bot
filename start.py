@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 from utils.database import create_pool, close_pool, get_pool
 from utils.error_handler import DiscordErrorHandler
 from utils.setupdatabase import init_db
+from cogs.tickets import demander_confirmation_moderateur
 
 Token = os.getenv("DISCORD_TOKEN")
 if not Token:
@@ -59,73 +60,112 @@ async def ticket_watcher():
     now = int(time.time())
     pool = get_pool()
 
+    # Une seule connexion pour lister les tickets : suffisant, rapide, et on la relâche
+    # tout de suite après (voir plus bas, chaque étape reprend sa propre connexion —
+    # sinon un seul appel Discord lent pendant la boucle garde une connexion du pool
+    # occupée pour rien, alors que le pool est volontairement restreint, voir
+    # utils/database.py).
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
             await cur.execute("""
-            SELECT thread_id, last_message, warn_12h, closed_at, statut
+            SELECT thread_id, last_message, warn_12h, closed_at, statut, modo_id
             FROM ticket
             """)
             tickets = await cur.fetchall()
 
-            for thread_id, last_msg, warn_12h, closed_at, statut in tickets:
+    for thread_id, last_msg, warn_12h, closed_at, statut, modo_id in tickets:
+        try:
+            thread = bot.get_channel(thread_id)
+            if not thread:
                 try:
-                    thread = bot.get_channel(thread_id)
-                    if not thread:
-                        try:
-                            thread = await bot.fetch_channel(thread_id)
-                        except discord.NotFound:
-                            # Le thread n'existe plus : on nettoie l'entrée orpheline.
+                    thread = await bot.fetch_channel(thread_id)
+                except discord.NotFound:
+                    # Le thread n'existe plus : on nettoie l'entrée orpheline.
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
                             await cur.execute("DELETE FROM ticket WHERE thread_id = %s", (thread_id,))
-                            continue
-                        except discord.HTTPException:
-                            continue
+                        await conn.commit()
+                    continue
+                except discord.HTTPException:
+                    continue
 
-                    # ---------------------------------------------------------
-                    # ⛔ TICKET DÉJÀ FERMÉ
-                    # Si le ticket est marqué comme fermé (statut = 3),
-                    # on vérifie simplement si 24h se sont écoulées depuis
-                    # la fermeture pour supprimer le thread automatiquement.
-                    # ---------------------------------------------------------
-                    if statut == 3:
-                        if closed_at and now >= closed_at + (24 * 3600):
-                            await thread.delete(reason="Ticket fermé depuis plus de 24h.")
+            # ---------------------------------------------------------
+            # ⛔ TICKET DÉJÀ FERMÉ
+            # Si le ticket est marqué comme fermé (statut = 3),
+            # on vérifie simplement si 24h se sont écoulées depuis
+            # la fermeture pour supprimer le thread automatiquement.
+            # ---------------------------------------------------------
+            if statut == 3:
+                if closed_at and now >= closed_at + (24 * 3600):
+                    await thread.delete(reason="Ticket fermé depuis plus de 24h.")
+                    async with pool.acquire() as conn:
+                        async with conn.cursor() as cur:
                             await cur.execute("DELETE FROM ticket WHERE thread_id = %s", (thread_id,))
-                        continue
+                        await conn.commit()
+                continue
 
-                    # ---------------------------------------------------------
-                    # 🕒 TICKET ACTIF
-                    # last_msg = timestamp du dernier message dans le ticket.
-                    # ---------------------------------------------------------
-                    if last_msg is None:
-                        continue
+            # ---------------------------------------------------------
+            # 🕒 TICKET ACTIF
+            # last_msg = timestamp du dernier message du membre dans le ticket
+            # (voir on_message dans cogs/events.py, qui remet aussi warn_12h à
+            # NULL dès qu'il répond).
+            # ---------------------------------------------------------
+            if last_msg is None:
+                continue
 
-                    inactivity = now - last_msg
+            inactivity = now - last_msg
 
-                    # ---------------------------------------------------------
-                    # ⚠️ AVERTISSEMENT APRÈS 12 HEURES
-                    # ---------------------------------------------------------
-                    if inactivity >= 12 * 3600 and not warn_12h:
-                        await thread.send("⚠️ Ticket inactif depuis 12h.")
+            # ---------------------------------------------------------
+            # ⚠️ AVERTISSEMENT APRÈS 24 HEURES D'INACTIVITÉ
+            # UPDATE conditionné à "AND warn_12h IS NULL" + vérification du
+            # rowcount AVANT d'envoyer le message : réserve la ligne de façon
+            # atomique. Sans ça, deux passages (ou deux process du bot lancés
+            # en même temps) qui lisent tous les deux warn_12h avant que l'un
+            # des deux commit envoient chacun leur propre avertissement — le
+            # bug qui faisait apparaître le message plusieurs fois pour un
+            # même ticket.
+            # ---------------------------------------------------------
+            if inactivity >= 24 * 3600 and not warn_12h:
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
                         await cur.execute(
-                            "UPDATE ticket SET warn_12h = 1 WHERE thread_id = %s",
+                            "UPDATE ticket SET warn_12h = 1 WHERE thread_id = %s AND warn_12h IS NULL",
                             (thread_id,)
                         )
+                        gagne = cur.rowcount == 1
+                    await conn.commit()
 
-                    # ---------------------------------------------------------
-                    # 🔒 FERMETURE AUTOMATIQUE APRÈS 24 HEURES
-                    # ---------------------------------------------------------
-                    if inactivity >= 24 * 3600:
-                        await thread.send("🔒 Ticket fermé pour inactivité.")
-                        await thread.edit(archived=True, locked=True)
-                        await cur.execute("""
-                        UPDATE ticket
-                        SET statut = 3, closed_at = %s
-                        WHERE thread_id = %s
-                        """, (now, thread_id))
-                except Exception as e:
-                    logger.error(f"[ticket_watcher] Erreur sur le ticket {thread_id} : {e}")
+                if gagne:
+                    await thread.send("⚠️ Ticket inactif depuis 24h.")
 
-        await conn.commit()
+            # ---------------------------------------------------------
+            # 🔒 FERMETURE AUTOMATIQUE 48H APRÈS L'AVERTISSEMENT
+            # (24h + 48h = 72h d'inactivité totale). Même principe de
+            # réservation atomique que ci-dessus.
+            # ---------------------------------------------------------
+            if inactivity >= 72 * 3600:
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cur:
+                        await cur.execute(
+                            "UPDATE ticket SET statut = 3, closed_at = %s WHERE thread_id = %s AND statut != 3",
+                            (now, thread_id)
+                        )
+                        gagne = cur.rowcount == 1
+                    await conn.commit()
+
+                if not gagne:
+                    continue
+
+                await thread.send("🔒 Ticket fermé pour inactivité.")
+                await thread.edit(archived=True, locked=True)
+
+                # MP au modérateur assigné pour savoir si tout s'est bien passé
+                # (pas de message dans le ticket, déjà archivé/verrouillé à ce
+                # stade) — voir demander_confirmation_moderateur dans cogs/tickets.py.
+                if modo_id:
+                    await demander_confirmation_moderateur(bot, thread, modo_id)
+        except Exception as e:
+            logger.error(f"[ticket_watcher] Erreur sur le ticket {thread_id} : {e}")
 
 
 # ---------------------------------------------------------

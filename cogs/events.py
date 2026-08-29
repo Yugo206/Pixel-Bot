@@ -6,7 +6,7 @@ import random
 import os
 import discord
 from cogs.setupticket import TicketCreateView
-from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView
+from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView, ConfirmationClotureView
 from cogs.trade import TradeView
 from cogs.visite import VisiteGuidee
 from cogs.warn import RefuseroracceptercontestationView
@@ -72,6 +72,7 @@ class Events(commands.Cog):
             self.bot.add_view(ConditionsPartenariatView())
             self.bot.add_view(MentionPartenariatView())
             self.bot.add_view(SatisfactionView())
+            self.bot.add_view(ConfirmationClotureView())
             self.bot.add_view(ConditionsSelect())
             self.bot.add_view(FormulaireBouton())
             self.bot.add_view(TradeView())

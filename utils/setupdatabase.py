@@ -54,10 +54,17 @@ TABLES = {
         "statut INT NOT NULL",
         "raison TEXT NOT NULL",
         "last_message BIGINT",
+        # Nom conservé tel quel malgré le seuil désormais à 24h (voir ticket_watcher
+        # dans start.py) pour éviter une migration de colonne pour un simple renommage :
+        # sert juste de flag "avertissement d'inactivité déjà envoyé".
         "warn_12h INT",
         "closed_at BIGINT",
         "modo_message_id BIGINT",
-        "message_ticket_id BIGINT"
+        "message_ticket_id BIGINT",
+        # Message MP envoyé au modérateur à la fermeture automatique (voir
+        # ConfirmationClotureView dans cogs/tickets.py) : permet de relier sa réponse
+        # (clic sur le select) au bon ticket sans dépendre d'un salon/thread.
+        "mod_dm_message_id BIGINT"
     ],
     "role_special": [
         "id INT NOT NULL PRIMARY KEY AUTO_INCREMENT",
@@ -147,6 +154,9 @@ async def init_db(pool: aiomysql.Pool):
             # la migration faite, puisque ces tables n'existent plus alors.
             await _migrate_legacy_temp_roles(c)
 
+            # 5️⃣ Contrainte UNIQUE sur ticket.thread_id (voir _migrate_ticket_thread_unique).
+            await _migrate_ticket_thread_unique(c)
+
         await conn.commit()
 
 
@@ -173,3 +183,27 @@ async def _migrate_legacy_temp_roles(c):
             "SELECT user_id, role_id, end_time, 'shop_purchase' FROM shop_temp_roles"
         )
         await c.execute("DROP TABLE shop_temp_roles")
+
+
+async def _migrate_ticket_thread_unique(c):
+    """Ajoute une contrainte UNIQUE(thread_id) sur `ticket` si elle n'existe pas déjà.
+
+    Sans cette contrainte, un doublon accidentel (ex: deux instances du bot lancées
+    en même temps) fait traiter le même ticket deux fois par ticket_watcher —
+    chaque ligne envoie son propre avertissement d'inactivité pour le même thread.
+    Dédoublonne d'abord par sécurité (garde la ligne la plus récente par thread_id) :
+    idempotent, sans effet une fois la contrainte posée."""
+    await c.execute(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ticket' AND INDEX_NAME = 'thread_id_unique'"
+    )
+    (already_done,) = await c.fetchone()
+    if already_done:
+        return
+
+    await c.execute("""
+        DELETE t1 FROM ticket t1
+        INNER JOIN ticket t2
+        ON t1.thread_id = t2.thread_id AND t1.ticket_id < t2.ticket_id
+    """)
+    await c.execute("ALTER TABLE ticket ADD CONSTRAINT thread_id_unique UNIQUE (thread_id)")
