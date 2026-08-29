@@ -13,8 +13,8 @@ class ticketsconf(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def setup_ticket(self, ctx):
         channel = ctx.channel
-        embed = discord.Embed(title="Tu as un problème, question ou partenariat ?", description="Viens en parler au staff en ouvrant un ticket", color=discord.Color.green())
-        embed.add_field(name="Tikets abusifs", value="Tout ticket abusif sera sanctionné", inline=False)
+        embed = discord.Embed(title="Tu as un problème, une question ou un partenariat à proposer ?", description="Viens en parler au staff en ouvrant un ticket", color=discord.Color.green())
+        embed.add_field(name="Tickets abusifs", value="Tout ticket abusif sera sanctionné", inline=False)
         view = TicketCreateView()
         await channel.send(embed=embed, view=view)
 

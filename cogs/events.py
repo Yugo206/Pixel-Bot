@@ -173,7 +173,7 @@ class Events(commands.Cog):
         # silencieusement pour les membres ayant fermé leurs messages privés.
         if member.id in BLACKLIST:
             try:
-                await member.send("Tu as été blacklisté du serveur. Kick immediat.")
+                await member.send("Tu as été blacklisté du serveur. Kick immédiat.")
             except discord.Forbidden:
                 pass
             await member.kick(reason="Membre blacklisté")

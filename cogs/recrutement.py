@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class RaisonModal(discord.ui.Modal, title="Raison du refus"):
     raison = discord.ui.TextInput(
         style=discord.TextStyle.paragraph,
-        placeholder="Cette personne n'est pas accepté dans le staff car ...",
+        placeholder="Cette candidature n'est pas retenue car ...",
         required=True,
         label="Pourquoi refuser cette candidature ?",
         max_length=500,
@@ -31,11 +31,11 @@ class RaisonModal(discord.ui.Modal, title="Raison du refus"):
         membre = self.membre
         message = self.ctx
         if message is None:
-            await interaction.response.send_message("Erreur : message introuvable.", ephemeral=True)
+            await interaction.response.send_message("❌ Erreur : message introuvable.", ephemeral=True)
             return
 
         await interaction.response.send_message(
-            f"La candidature de {membre.mention} a été refusée par {interaction.user.mention} avec raison : {self.raison.value}"
+            f"La candidature de {membre.mention} a été refusée par {interaction.user.mention}.\nRaison : {self.raison.value}"
         )
 
         view = Accepterview()
@@ -45,7 +45,7 @@ class RaisonModal(discord.ui.Modal, title="Raison du refus"):
         await message.edit(view=view)
 
         embed = discord.Embed(title="Candidature refusée",
-                              description="Malheureusement, ta candidature a été refusé pour devenir modérateur sur Pixel Party. N'hésite pas à retenter ta chance plus tard !",
+                              description="Ta candidature pour devenir modérateur sur Pixel Party n'a malheureusement pas été retenue. N'hésite pas à retenter ta chance plus tard !",
                               color=discord.Color.red())
         icon = interaction.guild.icon.url if interaction.guild.icon else None
         embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
@@ -65,7 +65,7 @@ class RaisonModal(discord.ui.Modal, title="Raison du refus"):
                     await cursor.execute("DELETE FROM role_special WHERE user_id = %s", (membre.id,))
                 await conn.commit()
         except aiomysql.Error as e:
-            await interaction.followup.send(f"Erreur de base de donnée : {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ Erreur de base de données : {e}", ephemeral=True)
 
 
 class Accepterview(discord.ui.View):
@@ -87,7 +87,7 @@ class Accepterview(discord.ui.View):
                                    (interaction.message.id,))
                     row = await cursor.fetchone()
                     if row is None:
-                        await interaction.followup.send("Candidature introuvable.")
+                        await interaction.followup.send("❌ Candidature introuvable.")
                         return
                     user_id = row[0]
                     guild = interaction.guild
@@ -97,16 +97,16 @@ class Accepterview(discord.ui.View):
                     await cursor.execute("DELETE FROM role_special WHERE user_id = %s", (user_id,))
                 await conn.commit()
         except aiomysql.Error as e:
-            await interaction.followup.send(f"Erreur de base de donnée : {e}")
+            await interaction.followup.send(f"❌ Erreur de base de données : {e}")
             return
         except discord.NotFound:
             await interaction.followup.send("❌ Ce membre n'est plus sur le serveur.")
             return
 
         embed = discord.Embed(title="Candidature acceptée",
-                              description=f"Félicitations {membre.mention} ! Tu viens d'être accepté pour devenir modérateur sur Pixel Party !", color=discord.Color.green())
-        embed.add_field(name="Les étapes suivantes :", value="Tu va passer en modérateur test, tu aura accès à des salons privés et tu passera une période de test pour montrer tes compétences et ton activité. Ensuite, en fonction de ta performance, tu rentrera officiellement dans le staff ou tu reviendra membre.", inline=False)
-        embed.add_field(name="Durée :", value="La période de test dure 1 semaine", inline=False)
+                              description=f"Félicitations {membre.mention} ! Ta candidature pour devenir modérateur sur Pixel Party est acceptée !", color=discord.Color.green())
+        embed.add_field(name="Les étapes suivantes :", value="Tu vas passer modérateur test : tu auras accès à des salons privés et tu traverseras une période d'essai pour montrer tes compétences et ton implication. À l'issue de cette période, selon ta performance, tu rejoindras officiellement le staff ou tu redeviendras simple membre.", inline=False)
+        embed.add_field(name="Durée :", value="La période de test dure une semaine.", inline=False)
         icon = interaction.guild.icon.url if interaction.guild.icon else None
         embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
 
@@ -142,7 +142,7 @@ class Accepterview(discord.ui.View):
                 )
             await conn.commit()
 
-        await interaction.followup.send(f"La candidature de {membre.mention} vient d'être acceptée par {interaction.user.mention} ✅")
+        await interaction.followup.send(f"La candidature de {membre.mention} a été acceptée par {interaction.user.mention} ✅")
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, emoji="❌", custom_id="recrutement:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -154,7 +154,7 @@ class Accepterview(discord.ui.View):
                     row = await cursor.fetchone()
 
             if row is None:
-                await interaction.response.send_message("Candidature introuvable.", ephemeral=True)
+                await interaction.response.send_message("❌ Candidature introuvable.", ephemeral=True)
                 return
 
             user_id = row[0]
@@ -162,7 +162,7 @@ class Accepterview(discord.ui.View):
             if membre is None:
                 membre = await interaction.guild.fetch_member(user_id)
         except aiomysql.Error as e:
-            await interaction.response.send_message(f"Erreur : {e}", ephemeral=True)
+            await interaction.response.send_message(f"❌ Erreur : {e}", ephemeral=True)
             return
         except discord.NotFound:
             await interaction.response.send_message("❌ Ce membre n'est plus sur le serveur.", ephemeral=True)
@@ -175,20 +175,20 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
     question2 = discord.ui.TextInput(label="Réaction face à une insulte ?", placeholder="Un membre insulte un autre membre. Que fais-tu ?", style=discord.TextStyle.paragraph, required=True, min_length=50)
     question3 = discord.ui.TextInput(label="Si un ami enfreint une règle ?", placeholder="Si un de tes amis enfreint une règle, que fais-tu ?", style=discord.TextStyle.paragraph, required=True, min_length=50)
     question4 = discord.ui.TextInput(label="Temps disponible par semaine ?", placeholder="Combien de temps peux-tu consacrer au serveur par semaine ?", style=discord.TextStyle.paragraph, required=True)
-    question5 = discord.ui.TextInput(label="C'est quoi un mauvais modérateur ?", placeholder="Selon toi, c’est quoi un mauvais modérateur ?", style=discord.TextStyle.paragraph, required=True, min_length=50)
+    question5 = discord.ui.TextInput(label="Qu'est-ce qu'un mauvais modérateur ?", placeholder="Selon toi, qu'est-ce qu'un mauvais modérateur ?", style=discord.TextStyle.paragraph, required=True, min_length=50)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             embed = discord.Embed(
                 title="Formulaire reçu",
-                description=f"Merci {interaction.user.mention} pour tes réponses!",
+                description=f"Merci {interaction.user.mention} pour tes réponses !",
                 color=discord.Color.green()
             )
 
             embed.add_field(name="Pourquoi devenir modérateur ?", value=self.question1.value, inline=False)
             embed.add_field(name="Réaction face à une insulte ?", value=self.question2.value, inline=False)
             embed.add_field(name="Si un ami enfreint une règle ?", value=self.question3.value, inline=False)
-            embed.add_field(name="Temps disponible ?", value=self.question4.value, inline=False)
+            embed.add_field(name="Temps disponible par semaine ?", value=self.question4.value, inline=False)
             embed.add_field(name="Mauvais modérateur ?", value=self.question5.value, inline=False)
 
             await interaction.response.send_message("✅ Formulaire envoyé !", embed=embed, ephemeral=True)
@@ -216,7 +216,7 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
 
         except Exception as e:
             logger.error(f"💥 ERREUR MODAL : {e}")
-            await interaction.followup.send(f"Erreur : {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ Une erreur est survenue : {e}", ephemeral=True)
 
 
 class FormulaireBouton(discord.ui.View):
@@ -245,7 +245,7 @@ class ConditionsSelect(discord.ui.View):
                     await cur.execute("SELECT status FROM role_special WHERE user_id = %s", (interaction.user.id,))
                     row = await cur.fetchone()
         except aiomysql.Error as e:
-            await interaction.followup.send(f"Erreur de base de donnée : {e}", ephemeral=True)
+            await interaction.followup.send(f"❌ Erreur de base de données : {e}", ephemeral=True)
             return
 
         # ---------------------------------------------------------
@@ -254,17 +254,17 @@ class ConditionsSelect(discord.ui.View):
 
         # 1. Vérifie si déjà en procédure
         if row:
-            await interaction.followup.send("Tu as déjà une candidature en cours !", ephemeral=True)
+            await interaction.followup.send("❌ Tu as déjà une candidature en cours !", ephemeral=True)
             return
 
         # 2. Vérifie ancienneté (1 mois)
         joined_at = interaction.user.joined_at
         if joined_at is None:
-            await interaction.followup.send("Impossible de vérifier ton ancienneté.", ephemeral=True)
+            await interaction.followup.send("❌ Impossible de vérifier ton ancienneté.", ephemeral=True)
             return
 
         if (discord.utils.utcnow() - joined_at).days < 30:
-            await interaction.followup.send("Tu dois être sur le serveur depuis au moins 1 mois.", ephemeral=True)
+            await interaction.followup.send("❌ Tu dois être sur le serveur depuis au moins un mois.", ephemeral=True)
             return
 
         # 3. Vérifie les avertissements (max 3)
@@ -275,27 +275,27 @@ class ConditionsSelect(discord.ui.View):
                     await cur.execute("SELECT COUNT(*) FROM warns WHERE user_id = %s", (interaction.user.id,))
                     warn_count = (await cur.fetchone())[0]
         except aiomysql.Error:
-            await interaction.followup.send("Erreur lors de la vérification des avertissements.", ephemeral=True)
+            await interaction.followup.send("❌ Erreur lors de la vérification des avertissements.", ephemeral=True)
             return
 
         if warn_count > 3:
-            await interaction.followup.send("Tu as trop d'avertissements pour postuler.", ephemeral=True)
+            await interaction.followup.send("❌ Tu as trop d'avertissements pour postuler.", ephemeral=True)
             return
-        embed = discord.Embed(title="Commencer le recrutement", description=f"Bienvenue dans le système de recrutement, {interaction.user.name}!", colour=discord.Colour.blue())
-        embed.add_field(name="Etape 1 :", value="Remplis le formulaire ci-dessous pour donner tes informations au staff", inline=False)
-        embed.add_field(name="Etape 2 :", value="Tu passe un entretien vocal avec un administrateur", inline=False)
-        embed.add_field(name="Etape 3 : ", value="Tu rentre (ou non) dans le staff et tu est en phase de **test**", inline=False)
-        embed.add_field(name="Ensuite ?", value="En fonction de ton activité et de tes compétences, a la fin de la periode de test, tu rentre officielement dans le staff ou tu reviens membre.", inline=False)
-        embed.add_field(name="Tu est prêt.e ?", value="Selectionne le rôle staff que tu souhaite avoir mais attention : après avoir cliqué, tu t'engage et pas de retour possible. Tout abus sera sanctionné", inline=False)
+        embed = discord.Embed(title="Commencer le recrutement", description=f"Bienvenue dans le système de recrutement, {interaction.user.name} !", colour=discord.Colour.blue())
+        embed.add_field(name="Étape 1 :", value="Remplis le formulaire ci-dessous pour donner tes informations au staff", inline=False)
+        embed.add_field(name="Étape 2 :", value="Tu passes un entretien vocal avec un administrateur", inline=False)
+        embed.add_field(name="Étape 3 :", value="Tu rejoins (ou non) le staff, en phase de **test**", inline=False)
+        embed.add_field(name="Ensuite ?", value="En fonction de ton activité et de tes compétences, tu rejoins officiellement le staff à la fin de la période de test, ou tu redeviens membre.", inline=False)
+        embed.add_field(name="Tu es prêt.e ?", value="Sélectionne le rôle staff que tu souhaites obtenir. Attention : une fois cliqué, tu t'engages et il n'y a pas de retour en arrière possible. Tout abus sera sanctionné.", inline=False)
         icon = interaction.guild.icon.url if interaction.guild.icon else None
         embed.set_footer(text="Pixel Party - Système de recrutement", icon_url=icon)
-        embed2 = discord.Embed(title="La suite dans les messages privés", description="Afin de faciliter pour la persistance des messages pour mieux t'y retrouver, la suite du recrutement est envoyé dans les messages privés", colour=discord.Colour.blue())
+        embed2 = discord.Embed(title="La suite dans les messages privés", description="Pour que tu puisses mieux t'y retrouver, la suite du recrutement se déroule en messages privés.", colour=discord.Colour.blue())
         try:
             await interaction.followup.send(embed=embed2, ephemeral=True)
             await interaction.user.send(embed=embed, view=FormulaireBouton())
         except discord.Forbidden:
             await interaction.followup.send(
-                "Tu n'as pas activé les messages privés ! Active-les, c'est **obligatoire** pour continuer le recrutement.",
+                "Tes messages privés sont désactivés. Active-les : c'est **obligatoire** pour continuer le recrutement.",
                 ephemeral=True
             )
 
@@ -306,24 +306,24 @@ class RecrutementCog(commands.Cog):
     async def setup_recrutement(self, ctx):
         await ctx.message.delete()
         embed = discord.Embed(title="Système de recrutement pour devenir modérateur",
-                              description="Ici tu verra toutes les informations pour devenir **modérateur**",
+                              description="Tu trouveras ici toutes les informations pour devenir **modérateur**.",
                               color=discord.Color.green())
         embed.add_field(name="Ton rôle :",
-                        value="Retirer et sanctionner les membres ou contenu qui ne respectent pas les Tos ou le reglement du serveur.",
+                        value="Faire respecter le règlement et les conditions d'utilisation du serveur, et sanctionner les membres ou contenus qui les enfreignent.",
                         inline=False)
         embed.add_field(name="Conditions :",
-                        value="Être assez actif et serieux sur le serveur, minimum d'ancienneté requis et passage des tests **obligatoire**",
+                        value="Être actif et sérieux sur le serveur. Une ancienneté minimale est requise, ainsi que la réussite des tests, **obligatoires**.",
                         inline=False)
-        embed.add_field(name="Etapes de recrutement :",
-                        value="Remplis le formulaire en cliquant sur le boutton. Si tu est accepté, un entretien vocal sera fait avec toi et tu passera modérateur test.",
+        embed.add_field(name="Étapes de recrutement :",
+                        value="Remplis le formulaire en cliquant sur le bouton ci-dessous. Si ta candidature est acceptée, un entretien vocal sera organisé avec toi, puis tu passeras modérateur test.",
                         inline=False)
-        embed.add_field(name="Evolutions :",
-                        value="Tu as la possibilité de monter en grade. Au debut, tu est **Modérateur test**, si tu remplis bien ton rôle tu passe **Modérateur** et une futur promotion se fera en fonction de ton activité.",
+        embed.add_field(name="Évolutions :",
+                        value="Tu peux monter en grade au fil du temps. Tu commences **Modérateur test** ; si tu remplis bien ton rôle, tu deviens **Modérateur**, et une future promotion pourra suivre selon ton activité.",
                         inline=False)
         embed.add_field(name="Avantages : ",
-                        value="Tu est au coeur du serveur, accès a des salons privés et tu participe aux décisions concernant l'avenir du serveur.",
+                        value="Tu es au cœur du serveur : accès à des salons privés, et participation aux décisions concernant son avenir.",
                         inline=False)
-        embed.add_field(name="Tu est sûr.e de toi ?", value="Clique sur le boutton pour commencer le recrutement",
+        embed.add_field(name="Tu es sûr.e de toi ?", value="Clique sur le bouton ci-dessous pour commencer le recrutement.",
                         inline=False)
         await ctx.channel.send(embed=embed, view=ConditionsSelect())
 

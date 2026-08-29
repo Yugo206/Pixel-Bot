@@ -143,7 +143,7 @@ class PersonnaliserButton(discord.ui.View):
         jeux = _jeux_disponibles(interaction.user)
         if not jeux:
             await interaction.response.send_message(
-                "Tu n'as aucun rôle jeu/plateforme pour l'instant. Choisis-en d'abord via "
+                "❌ Tu n'as aucun rôle jeu/plateforme pour l'instant. Choisis-en d'abord via "
                 "l'accueil du serveur pour pouvoir personnaliser ton profil !",
                 ephemeral=True
             )
@@ -173,7 +173,7 @@ class Profile(commands.Cog):
     async def profil(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        embed = discord.Embed(title="Profil", description="Ton profil contient ton **argent**, ton **XP** et tes **niveaux**", color=discord.Color.green())
+        embed = discord.Embed(title="Profil", description="Ton profil contient ton **argent**, ton **XP** et ton **niveau**", color=discord.Color.green())
         pool = get_pool()
         async with pool.acquire() as conn:
             async with conn.cursor() as cursor:
@@ -184,7 +184,7 @@ class Profile(commands.Cog):
         argent = result[0] if result and result[0] is not None else 0
         xp = result[1] if result and result[1] is not None else 0
         embed.add_field(name="Argent :", value=f"{argent} €", inline=False)
-        embed.add_field(name="Experience :", value=f"{xp}", inline=False)
+        embed.add_field(name="Expérience :", value=f"{xp}", inline=False)
         nv = self.get_level(xp)
         embed.add_field(name="Niveau :", value=f"{nv}", inline=False)
         if extra:
