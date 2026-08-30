@@ -169,7 +169,7 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
         placeholder="Je trouve ce warn injuste car ...",
         min_length=100,
         max_length=1092,
-        label="Explique pourquoi tu trouve ce warn injuste",
+        label="Explique pourquoi tu trouves ce warn injuste",
         required=True
     )
 
@@ -180,7 +180,7 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
         self.warn = warn  # tuple (id, raison, created_at) ou None
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Merci, tu recevera une réponse dans les prochaines 24h", ephemeral=True)
+        await interaction.response.send_message("Merci, tu recevras une réponse sous 24h.", ephemeral=True)
 
         channel = await get_modo_channel(self.bot)
         if channel is None:
@@ -270,15 +270,15 @@ class Warn(commands.Cog):
     async def before_tempbans(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name="warn", description="Averti un membre")
+    @app_commands.command(name="warn", description="Avertit un membre")
     @app_commands.checks.has_permissions(manage_messages=True)
     async def warn(self, interaction: discord.Interaction, user: discord.Member, raison: str):
         await interaction.response.defer(ephemeral=True)
 
         if interaction.guild is None:
             embed = discord.Embed(
-                title="Les messages privées...",
-                description="Cette commande est indisponible en MP en raison d'optimisation de mon code... Mais tu peut aller dans <@> pour cela !",
+                title="Les messages privés...",
+                description="Cette commande n'est pas disponible en MP. Utilise-la directement sur le serveur !",
                 color=discord.Color.red()
             )
             await interaction.followup.send(embed=embed)
@@ -335,20 +335,20 @@ class Warn(commands.Cog):
         await apply_warn_sanction(interaction.guild, membre, channel, warn_count)
 
         await interaction.followup.send(
-            "Le membre viens d'etre averti en MP, merci !",
+            "Le membre vient d'être averti en MP, merci !",
             ephemeral=True
         )
 
         embed = discord.Embed(
-            title="Tu viens d'etre avertit",
-            description="Tu t'est mal comporté sur Pixel Party donc un avertissement vient de tomber",
+            title="Tu viens d'être averti",
+            description="Tu t'es mal comporté sur Pixel Party, donc un avertissement vient de tomber.",
             color=discord.Color.red()
         )
-        embed.add_field(name="Moderateur : ", value=modo.mention, inline=False)
+        embed.add_field(name="Modérateur : ", value=modo.mention, inline=False)
         embed.add_field(name="Raison : ", value=raison, inline=False)
         embed.add_field(
             name="C'est une erreur ?",
-            value="Clique sur le boutton ci-dessous pour contester ta sanction"
+            value="Clique sur le bouton ci-dessous pour contester ta sanction"
         )
         embed.set_footer(text=f"ID du warn : {warn_id}")
 

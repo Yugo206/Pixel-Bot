@@ -45,7 +45,7 @@ class Trade(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @app_commands.command(name="trade-brainrot", description="Fait une annonce pour trade ton brainrot")
+    @app_commands.command(name="trade-brainrot", description="Fais une annonce pour trade ton brainrot")
     @app_commands.describe(brainrot="Quel brainrot veux-tu trade ?", argent="Combien d'argent /s fait ton brainrot ?", note="Note supplémentaire")
     async def trade_brainrot(self, interaction: discord.Interaction, brainrot: str, argent: str, note: str | None = None):
         channel_id = os.getenv("CHANNEL_TRADE_ID")

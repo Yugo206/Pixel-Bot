@@ -73,7 +73,7 @@ class AvisView(discord.ui.View):
         bot = interaction.client
         advisor = await get_modo_channel(bot)
         if advisor is None:
-            await interaction.response.send_message("ERREUR : Ouvre un ticket sur Pixel Party pour resoudre le probleme", ephemeral=True)
+            await interaction.response.send_message("❌ Erreur : ouvre un ticket sur Pixel Party pour résoudre le problème.", ephemeral=True)
             return
 
         await advisor.send(
@@ -103,7 +103,7 @@ class ModoView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Prendre en chage", style=discord.ButtonStyle.blurple, custom_id="ticket:prendre")
+    @discord.ui.button(label="Prendre en charge", style=discord.ButtonStyle.blurple, custom_id="ticket:prendre")
     async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
@@ -117,16 +117,16 @@ class ModoView(discord.ui.View):
                     result = await c.fetchone()
         except aiomysql.Error as e:
             logger.critical(f"[tickets:prendre] Erreur DB : {e}", exc_info=True)
-            await interaction.followup.send(f"ERREUR DB : Contacte {_owner_mention()} pour resoudre le probleme", ephemeral=True)
+            await interaction.followup.send(f"❌ Erreur de base de données, contacte {_owner_mention()} pour résoudre le problème.", ephemeral=True)
             return
 
         if result is None:
-            await interaction.followup.send("ERREUR DB : Aucun ticket trouvé", ephemeral=True)
+            await interaction.followup.send("❌ Erreur de base de données : aucun ticket trouvé.", ephemeral=True)
             return
 
         thread_id, membre_id, message_ticket_id = result
         if thread_id is None or membre_id is None or message_ticket_id is None:
-            await interaction.followup.send(f"ERREUR DB : Contacte {_owner_mention()} pour resoudre le probleme", ephemeral=True)
+            await interaction.followup.send(f"❌ Erreur de base de données, contacte {_owner_mention()} pour résoudre le problème.", ephemeral=True)
             return
 
         try:
@@ -136,12 +136,12 @@ class ModoView(discord.ui.View):
             await interaction.followup.send("❌ Le ticket ou son message d'origine n'existe plus.", ephemeral=True)
             return
 
-        await interaction.followup.send(f"Tu a pris le ticket. Le lien est ici : {thread.mention}.", ephemeral=True)
+        await interaction.followup.send(f"Tu as pris le ticket. Le lien est ici : {thread.mention}.", ephemeral=True)
 
         if message_ticket.embeds:
             embed = message_ticket.embeds[0]
             embed.set_field_at(2, name="Modérateur : ", value=interaction.user.mention)
-            embed.set_field_at(4, name="Statue", value="Actif")
+            embed.set_field_at(4, name="Statut", value="Actif")
             await message_ticket.edit(embed=embed)
 
         button.disabled = True
@@ -170,7 +170,7 @@ class SatisfactionView(discord.ui.View):
         options=[
             discord.SelectOption(label="Super bien !", description="Le ticket s'est bien passé", emoji="🙂"),
             discord.SelectOption(label="Mal", description="Le membre a insulté / n'a pas respecté le staff", emoji="😕"),
-            discord.SelectOption(label="Pas de reponse",
+            discord.SelectOption(label="Pas de réponse",
                                  description="Tu as mentionné plusieurs fois le membre, mais pas de réponses.",
                                  emoji="🚫")
         ],
@@ -307,7 +307,7 @@ class ConfirmationClotureView(discord.ui.View):
         options=[
             discord.SelectOption(label="Super bien !", description="Le ticket s'est bien passé", emoji="🙂"),
             discord.SelectOption(label="Mal", description="Le membre a mal agi, il faut reprendre la main dessus", emoji="😕"),
-            discord.SelectOption(label="Pas de reponse", description="Le membre n'a jamais répondu, il faut relancer", emoji="🚫"),
+            discord.SelectOption(label="Pas de réponse", description="Le membre n'a jamais répondu, il faut relancer", emoji="🚫"),
         ],
         custom_id="ticket:confirmation_cloture_auto"
     )
@@ -434,7 +434,7 @@ class FermerView(discord.ui.View):
                 content = await c.fetchone()
 
         if content is None or content[0] is None:
-            await interaction.followup.send("Probleme DB")
+            await interaction.followup.send("❌ Problème de base de données.")
             return
 
         raison, membre_id = content
@@ -444,25 +444,25 @@ class FermerView(discord.ui.View):
         role_modo_id = os.getenv("ROLE_MODO_ID")
         role = discord.utils.get(interaction.user.roles, id=int(role_modo_id)) if role_modo_id else None
         if role:
-            await interaction.followup.send("Comment s'est passé votre ticket ?", view=SatisfactionView(), ephemeral=True)
+            await interaction.followup.send("Comment s'est passé ton ticket ?", view=SatisfactionView(), ephemeral=True)
         else:
             await interaction.followup.send("Ticket fermé avec succès", ephemeral=True)
 
-        embed = discord.Embed(title="Ticket fermé", description="Ce ticket est fermé. Vous ne pouvez plus ecrire.")
+        embed = discord.Embed(title="Ticket fermé", description="Ce ticket est fermé. Tu ne peux plus écrire dedans.")
         embed.add_field(name="Fermé par :", value=interaction.user.mention)
-        embed.add_field(name="Raison ititiale du ticket : ", value=raison)
+        embed.add_field(name="Raison initiale du ticket : ", value=raison)
         button.disabled = True
         await interaction.message.edit(embed=embed, view=self)
 
         embed2 = discord.Embed(title="Donne-nous ton avis sur ton ticket !",
-                               description="Afin d'ameliorer le systeme de ticket ou de rendre le staff plus efficace, nous souhaitons receuillir ton avis sur ce ticket.")
+                               description="Afin d'améliorer le système de ticket et l'efficacité du staff, nous aimerions recueillir ton avis sur ce ticket.")
         try:
             await membre.send(embed=embed2, view=AvisView())
         except discord.Forbidden:
             pass
 
         ts = int((datetime.now(timezone.utc) + timedelta(seconds=86400)).timestamp())
-        await thread.send(f"Ce ticket as été fermé par {interaction.user.mention}. Il se supprimera <t:{ts}:R>")
+        await thread.send(f"Ce ticket a été fermé par {interaction.user.mention}. Il sera supprimé <t:{ts}:R>")
         await thread.edit(locked=True, archived=True)
 
         try:
@@ -481,16 +481,16 @@ class TicketCreateView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.select(placeholder="Selectionne une option", custom_id="ticket:create", options=[
+    @discord.ui.select(placeholder="Sélectionne une option", custom_id="ticket:create", options=[
         discord.SelectOption(label="Partenariat", description="Pour proposer ou discuter d'un partenariat entre serveur/projet", emoji="🤝"),
-        discord.SelectOption(label="Support technique", description="Pour signer un bug ou demander de l'aide concernant le serveur ou un bot", emoji="🛠️"),
+        discord.SelectOption(label="Support technique", description="Pour signaler un bug ou demander de l'aide concernant le serveur ou un bot", emoji="🛠️"),
         discord.SelectOption(label="Demande de rôle", description="Pour demander un rôle spécial, une vérification ou un grade particulier", emoji="🗒️"),
-        discord.SelectOption(label="Signaler un membre", description="pour signaler un comportement inapproprié du spam ou un non-respect des règles", emoji="🚨"),
-        discord.SelectOption(label="Contester une sanction", description="pour discuter d'un mute, kick ou ban que vous jugez injustifié", emoji="⚖️"),
-        discord.SelectOption(label="Question générale", description="pour poser des questions sur le serveur, les évènements, ou son fonctionnement", emoji="❓"),
-        discord.SelectOption(label="Problème lié aux économies du serveur", description="pour toute question concernant un achat ou un don", emoji="💰"),
-        discord.SelectOption(label="Suggestions pour le serveur", description="pour proposer des idées ou amélioration pour le serveur", emoji="💡"),
-        discord.SelectOption(label="Autre / privé", description="pour toute autre demande nécessitant une discussion en privé avec le staff", emoji="🔒"),
+        discord.SelectOption(label="Signaler un membre", description="Pour signaler un comportement inapproprié, du spam ou un non-respect des règles", emoji="🚨"),
+        discord.SelectOption(label="Contester une sanction", description="Pour discuter d'un mute, kick ou ban que tu juges injustifié", emoji="⚖️"),
+        discord.SelectOption(label="Question générale", description="Pour poser des questions sur le serveur, les évènements, ou son fonctionnement", emoji="❓"),
+        discord.SelectOption(label="Problème lié aux économies du serveur", description="Pour toute question concernant un achat ou un don", emoji="💰"),
+        discord.SelectOption(label="Suggestions pour le serveur", description="Pour proposer des idées ou améliorations pour le serveur", emoji="💡"),
+        discord.SelectOption(label="Autre / privé", description="Pour toute autre demande nécessitant une discussion privée avec le staff", emoji="🔒"),
     ])
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
         await interaction.response.defer(ephemeral=True)
@@ -504,20 +504,20 @@ class TicketCreateView(discord.ui.View):
         raison = select.values[0]
         view = FermerView()
         embed = discord.Embed(title="Gestionnaire de ticket", description=f"Bienvenue {interaction.user.name} sur ton ticket !", colour=discord.Colour.blue())
-        embed.add_field(name="Fermer le ticket", value="Tu peut fermer ton ticket à tout moment en cliquant sur ce boutton", inline=False)
+        embed.add_field(name="Fermer le ticket", value="Tu peux fermer ton ticket à tout moment en cliquant sur ce bouton", inline=False)
         embed.add_field(name="Raison du ticket : ", value=raison)
         embed.add_field(name="Modérateur :", value="Personne")
         embed.add_field(name="Demandé par :", value=interaction.user.mention)
-        embed.add_field(name="Statue : ", value="En attente d'un moderateur")
+        embed.add_field(name="Statut : ", value="En attente d'un modérateur")
         message = await thread.send(f"Bienvenue {interaction.user.mention} sur ton ticket", embed=embed, view=view)
-        await interaction.followup.send(f"Ticket crée avec succès dans {thread.mention}", ephemeral=True)
+        await interaction.followup.send(f"Ticket créé avec succès dans {thread.mention}", ephemeral=True)
 
         channel = await get_modo_channel(interaction.client, interaction.guild)
         messsages = None
         if channel is None:
             logger.warning("Aucun salon de modération trouvé (CHANNEL_MODO_ID non configuré ou introuvable).")
         else:
-            embed2 = discord.Embed(title="Ticket ouvert !", description="Clique sur le boutton ci-dessous pour acceder au ticket et le prendre en charge.", colour=discord.Colour.blue())
+            embed2 = discord.Embed(title="Ticket ouvert !", description="Clique sur le bouton ci-dessous pour accéder au ticket et le prendre en charge.", colour=discord.Colour.blue())
             messsages = await channel.send(embed=embed2, view=ModoView())
 
         await interaction.message.edit(view=TicketCreateView())
@@ -538,12 +538,12 @@ class TicketCreateView(discord.ui.View):
             embed_partenariat_intro = discord.Embed(title="Bienvenue sur ton ticket partenariat !",
                                          description="Afin de faciliter le travail du staff et te faire gagner du temps, nous souhaitons récuperer les informations du partenariat.",
                                          colour=discord.Colour.blue())
-            embed_partenariat_intro.add_field(name="Etape 1 : Conditions", value="Ces conditions sont obligatoires et mêmes sans le bot ces condition doivent etre accepté sinon partenariat impossible.", inline=False)
-            embed_partenariat_intro.add_field(name="Etape 2 : Ton sevreur", value="Fait une courte descripions de ce qu'est ton serveur.", inline=False)
-            embed_partenariat_intro.add_field(name="Etape 3 : Mentions", value="Donne quelle mention veux que ton serveur et notre serveur.", inline=False)
-            embed_partenariat_intro.add_field(name="Etape 3 : Ta pub", value="Tu donne la publicité de ton serveur avec le lien. Si tu n'a pas de pub, envoie juste le lien.", inline=False)
-            embed_partenariat_intro.add_field(name="Etape 5 : Notre pub & finalistion", value="Le bot envoie la pu du serveur. Le staff viendra ensuite pour publier les annonces.", inline=False)
-            embed_partenariat_intro.add_field(name="Alors, pret a commencer ?", value=" Clique sur le boutton \"Demarrer\" ci-dessous")
+            embed_partenariat_intro.add_field(name="Étape 1 : Conditions", value="Ces conditions sont obligatoires. Même sans l'aide du bot, elles doivent être acceptées, sinon le partenariat est impossible.", inline=False)
+            embed_partenariat_intro.add_field(name="Étape 2 : Ton serveur", value="Fais une courte description de ce qu'est ton serveur.", inline=False)
+            embed_partenariat_intro.add_field(name="Étape 3 : Mentions", value="Indique quelle mention tu souhaites entre ton serveur et le nôtre.", inline=False)
+            embed_partenariat_intro.add_field(name="Étape 4 : Ta pub", value="Donne la publicité de ton serveur avec le lien. Si tu n'as pas de pub, envoie juste le lien.", inline=False)
+            embed_partenariat_intro.add_field(name="Étape 5 : Notre pub & finalisation", value="Le bot envoie la pub du serveur. Le staff viendra ensuite pour publier les annonces.", inline=False)
+            embed_partenariat_intro.add_field(name="Alors, prêt à commencer ?", value="Clique sur le bouton \"Démarrer\" ci-dessous")
             await thread.send(embed=embed_partenariat_intro, view=PartenariatCommencerView())
 
 
@@ -551,7 +551,7 @@ class PartenariatCommencerView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Demarrer", style=discord.ButtonStyle.green, custom_id="Partenariat:Commencer")
+    @discord.ui.button(label="Démarrer", style=discord.ButtonStyle.green, custom_id="Partenariat:Commencer")
     async def demarrer(self, interaction: discord.Interaction, button: discord.ui.Button):
         embed = discord.Embed(
             title="🤝 Conditions de partenariat",
@@ -599,13 +599,13 @@ class PartenariatCommencerView(discord.ui.View):
         embed.add_field(
             name="⚠️ Règles importantes",
             value=(
-                "• Ping <@1418958299927412879> seulement (sauf exeption du staff) \n"
-                "• Tu doit mettre ta pub en premier.\n"
+                "• Ping <@1418958299927412879> seulement (sauf exception du staff) \n"
+                "• Tu dois mettre ta pub en premier.\n"
                 "• Invitation expirée ou message supprimé = partenariat annulé"
             ),
             inline=False
         )
-        embed.set_footer(text="En faisant un partenariat, tu t'engage a respecter ces règles")
+        embed.set_footer(text="En faisant un partenariat, tu t'engages à respecter ces règles")
         view = ConditionsPartenariatView()
         await interaction.response.send_message(embed=embed, view=view)
         button.disabled = True
@@ -681,16 +681,16 @@ class MentionPartenariatView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
         mention = select.values[0]
         channel = interaction.message.channel
-        await interaction.response.send_message(f"Mention choisi : {mention}")
-        embed = discord.Embed(title="Informations collectés !",
-                              description="Toute les informations de ton serveur ont été récupérés. Si il en manque, le staff te les demandera.")
+        await interaction.response.send_message(f"Mention choisie : {mention}")
+        embed = discord.Embed(title="Informations collectées !",
+                              description="Toutes les informations de ton serveur ont été récupérées. S'il en manque, le staff te les demandera.")
         embed.add_field(name="Description du serveur", value=self.description or "Non renseignée", inline=False)
         embed.add_field(name="Publicité", value=self.pub or "Non renseignée", inline=False)
         embed.add_field(name="Mention souhaitée", value=mention, inline=False)
-        embed.add_field(name="Tu pourrait de demander : je fait quoi maintenant ?",
-                        value="Tu attends que le staff traite ta demande. Reste toujours disponible pour aller le plus vite. En attendant, je t'envoie la pub de Pixel Party", inline=False)
+        embed.add_field(name="Tu pourrais te demander : je fais quoi maintenant ?",
+                        value="Tu attends que le staff traite ta demande. Reste toujours disponible pour aller le plus vite. En attendant, je t'envoie la pub de Pixel Party.", inline=False)
         await channel.send(embed=embed)
-        await channel.send("# **🎮 Pixel Party | Serveur Multigaming Fun & Actif !** \n ## **Tu cherches un endroit pour jouer, discuter et rigoler ? Rejoins Pixel Party !** \n 🔥 Jeux populaires : Fortnite • Brawl Stars • Minecraft • Roblox \n 🎉 Événements : cache-cache, défilés de mode, défis d’armes, tournois… \n 🏅 Rôles spéciaux à débloquer : VIP, Nintendo, PS5, etc. \n 🗨️ Une vraie communauté chill pour se faire des potes \n 💬 Que tu sois joueur switch, PC, mobile ou console… t’es le/la bienvenu(e) ! \n 🔗 Rejoins-nous maintenant en cliquant [ici](https://discord.gg/cnWz7fXAex)")
+        await channel.send("# **🎮 Pixel Party | Serveur Multigaming Fun & Actif !** \n ## **Tu cherches un endroit pour jouer, discuter et rigoler ? Rejoins Pixel Party !** \n 🔥 Jeux populaires : Fortnite • Brawl Stars • Minecraft • Roblox \n 🎉 Événements : cache-cache, défilés de mode, défis d’armes, tournois… \n 🏅 Rôles spéciaux à débloquer : VIP, Nintendo, PS5, etc. \n 🗨️ Une vraie communauté chill pour se faire des potes \n 💬 Que tu sois joueur Switch, PC, mobile ou console… t’es le/la bienvenu(e) ! \n 🔗 Rejoins-nous maintenant en cliquant [ici](https://discord.gg/cnWz7fXAex)")
 
 
 class Tickets(commands.Cog):
