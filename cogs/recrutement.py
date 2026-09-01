@@ -323,32 +323,10 @@ class ConditionsSelect(discord.ui.View):
             )
 
 class RecrutementCog(commands.Cog):
+    # Le panneau de recrutement se poste désormais via /creer-message
+    # (cogs/creermessage.py), qui reprend cet embed et ConditionsSelect ci-dessus.
     def __init__(self, bot):
         self.bot = bot
-    @commands.command(name="setup_recrutement")
-    async def setup_recrutement(self, ctx):
-        await ctx.message.delete()
-        embed = discord.Embed(title="Système de recrutement pour devenir modérateur",
-                              description="Tu trouveras ici toutes les informations pour devenir **modérateur**.",
-                              color=discord.Color.green())
-        embed.add_field(name="Ton rôle :",
-                        value="Faire respecter le règlement et les conditions d'utilisation du serveur, et sanctionner les membres ou contenus qui les enfreignent.",
-                        inline=False)
-        embed.add_field(name="Conditions :",
-                        value="Être actif et sérieux sur le serveur. Une ancienneté minimale est requise, ainsi que la réussite des tests, **obligatoires**.",
-                        inline=False)
-        embed.add_field(name="Étapes de recrutement :",
-                        value="Remplis le formulaire en cliquant sur le bouton ci-dessous. Si ta candidature est acceptée, un entretien vocal sera organisé avec toi, puis tu passeras modérateur test.",
-                        inline=False)
-        embed.add_field(name="Évolutions :",
-                        value="Tu peux monter en grade au fil du temps. Tu commences **Modérateur test** ; si tu remplis bien ton rôle, tu deviens **Modérateur**, et une future promotion pourra suivre selon ton activité.",
-                        inline=False)
-        embed.add_field(name="Avantages : ",
-                        value="Tu es au cœur du serveur : accès à des salons privés, et participation aux décisions concernant son avenir.",
-                        inline=False)
-        embed.add_field(name="Tu es sûr.e de toi ?", value="Clique sur le bouton ci-dessous pour commencer le recrutement.",
-                        inline=False)
-        await ctx.channel.send(embed=embed, view=ConditionsSelect())
 
 async def setup(bot):
     await bot.add_cog(RecrutementCog(bot))
