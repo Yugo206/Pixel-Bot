@@ -230,7 +230,11 @@ class BoutiqueCog(commands.Cog):
                                     try:
                                         await member.remove_roles(role, reason="Rôle temporaire de boutique expiré")
                                     except discord.Forbidden:
-                                        pass
+                                        logger.warning(
+                                            f"[check_temp_roles] Permissions insuffisantes pour retirer le "
+                                            f"rôle {role_id} à {user_id} : le rôle restera attribué en Discord "
+                                            "bien que la ligne de suivi soit supprimée."
+                                        )
                     except Exception as e:
                         logger.error(f"[check_temp_roles] Erreur pour user={user_id} role={role_id} : {e}")
                     finally:
@@ -244,6 +248,13 @@ class BoutiqueCog(commands.Cog):
 
     @app_commands.command(name="boutique", description="Regarde la boutique")
     async def boutique(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Cette commande n'est pas disponible en MP. Utilise-la directement sur le serveur !",
+                ephemeral=True
+            )
+            return
+
         await interaction.response.defer()
 
         embed = discord.Embed(

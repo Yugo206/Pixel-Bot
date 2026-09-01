@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from datetime import datetime, timedelta, timezone
 from cogs.warn import ContestationView
-from utils.database import get_pool
+from utils.database import get_pool, increment_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 
 logger = logging.getLogger(__name__)
@@ -194,13 +194,22 @@ class SatisfactionView(discord.ui.View):
             return
 
         bot = interaction.client
-        membre = bot.get_user(rpw[0])
+        # Résolu comme discord.Member (et non via bot.get_user/fetch_user) : nécessaire
+        # pour que apply_warn_sanction (utils/sanctions.py) puisse le timeout si le
+        # palier de warns l'exige — .timeout() n'existe pas sur un simple discord.User.
+        membre = interaction.guild.get_member(rpw[0])
         if membre is None:
             try:
-                membre = await bot.fetch_user(rpw[0])
+                membre = await interaction.guild.fetch_member(rpw[0])
             except discord.NotFound:
-                await interaction.followup.send("❌ Le membre de ce ticket est introuvable.", ephemeral=True)
-                return
+                # A quitté le serveur : on retombe sur un discord.User pour pouvoir
+                # quand même enregistrer le warn et tenter un DM. apply_warn_sanction
+                # gère ce cas si le palier atteint est un timeout (impossible hors serveur).
+                try:
+                    membre = await bot.fetch_user(rpw[0])
+                except discord.NotFound:
+                    await interaction.followup.send("❌ Le membre de ce ticket est introuvable.", ephemeral=True)
+                    return
 
         # Cas positif : rien à faire sauf désactiver le select
         if selected_value == "Super bien !":
@@ -208,27 +217,18 @@ class SatisfactionView(discord.ui.View):
             return
 
         # Cas négatifs : "Mal" ou "Pas de reponse"
-        warn_count = 0
         warn_id = None
 
         try:
+            # Incrément atomique (voir utils/database.py) : évite que ce warn et un
+            # /warn (ou une autre satisfaction de ticket) posés au même moment sur ce
+            # membre ne s'écrasent l'un l'autre.
+            warn_count = await increment_warn(membre.id)
+
+            iso_time = datetime.now(timezone.utc).isoformat()
+
             async with pool.acquire() as conn:
                 async with conn.cursor() as c:
-                    await c.execute("SELECT warn FROM utilisateurs WHERE user_id = %s", (membre.id,))
-                    result = await c.fetchone()
-
-                    iso_time = datetime.now(timezone.utc).isoformat()
-
-                    if result is None:
-                        await c.execute("INSERT INTO utilisateurs (user_id, warn) VALUES (%s, 1)", (membre.id,))
-                        warn_count = 1
-                    elif result[0] is None:
-                        await c.execute("UPDATE utilisateurs SET warn = 1 WHERE user_id = %s", (membre.id,))
-                        warn_count = 1
-                    else:
-                        warn_count = result[0] + 1
-                        await c.execute("UPDATE utilisateurs SET warn = %s WHERE user_id = %s", (warn_count, membre.id))
-
                     await c.execute(
                         "INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (%s, %s, %s, %s, %s)",
                         (membre.id, interaction.user.id, "Non respect des conditions d'ouverture de ticket",
@@ -249,12 +249,11 @@ class SatisfactionView(discord.ui.View):
         await apply_warn_sanction(interaction.guild, membre, channel, warn_count)
 
         # Créer l'embed d'avertissement
-        embed = self._create_warn_embed(selected_value, interaction.user)
+        embed = self._create_warn_embed(selected_value, interaction.user, warn_id)
 
         # Envoyer le message au membre
         try:
-            view = ContestationView(membre, bot, warn_id)
-            await membre.send(embed=embed, view=view)
+            await membre.send(embed=embed, view=ContestationView())
         except discord.Forbidden:
             logger.warning(f"Impossible d'envoyer un DM à {membre}")
         except Exception as e:
@@ -262,7 +261,7 @@ class SatisfactionView(discord.ui.View):
 
         await self._disable_and_respond(interaction)
 
-    def _create_warn_embed(self, selected_value: str, modo: discord.User) -> discord.Embed:
+    def _create_warn_embed(self, selected_value: str, modo: discord.User, warn_id: int | None) -> discord.Embed:
         """Crée l'embed d'avertissement selon le type de problème."""
         if selected_value == "Mal":
             embed = discord.Embed(
@@ -278,7 +277,9 @@ class SatisfactionView(discord.ui.View):
             )
 
         embed.add_field(name="C'est une erreur ?", value="Va vite ouvrir un ticket et conteste cet avertissement")
-        embed.set_footer(text="Pixel Party")
+        # Footer parsé par ContestationView (cogs/warn.py) pour retrouver le warn
+        # concerné sans avoir besoin de le stocker sur l'instance de la vue.
+        embed.set_footer(text=f"ID du warn : {warn_id}")
         return embed
 
     async def _disable_and_respond(self, interaction: discord.Interaction):
@@ -439,7 +440,13 @@ class FermerView(discord.ui.View):
 
         raison, membre_id = content
         bot = interaction.client
-        membre = await bot.fetch_user(membre_id)
+        try:
+            membre = await bot.fetch_user(membre_id)
+        except discord.NotFound:
+            # Compte supprimé entre-temps : on ne peut pas lui envoyer l'avis, mais
+            # ça ne doit pas empêcher la fermeture effective du ticket (archivage,
+            # statut en DB) — sinon le bouton reste actif et échoue à chaque clic.
+            membre = None
 
         role_modo_id = os.getenv("ROLE_MODO_ID")
         role = discord.utils.get(interaction.user.roles, id=int(role_modo_id)) if role_modo_id else None
@@ -456,10 +463,11 @@ class FermerView(discord.ui.View):
 
         embed2 = discord.Embed(title="Donne-nous ton avis sur ton ticket !",
                                description="Afin d'améliorer le système de ticket et l'efficacité du staff, nous aimerions recueillir ton avis sur ce ticket.")
-        try:
-            await membre.send(embed=embed2, view=AvisView())
-        except discord.Forbidden:
-            pass
+        if membre is not None:
+            try:
+                await membre.send(embed=embed2, view=AvisView())
+            except discord.Forbidden:
+                pass
 
         ts = int((datetime.now(timezone.utc) + timedelta(seconds=86400)).timestamp())
         await thread.send(f"Ce ticket a été fermé par {interaction.user.mention}. Il sera supprimé <t:{ts}:R>")
@@ -656,21 +664,41 @@ class ConditionsPartenariatView(discord.ui.View):
         except asyncio.TimeoutError:
             await thread.send("⏱️ Pas de pub reçue.")
 
+        # Enregistrées en DB (plutôt que gardées uniquement sur l'instance de
+        # MentionPartenariatView) : cette vue est enregistrée globalement au
+        # démarrage (bot.add_view, voir cogs/events.py) pour rester persistante, ce
+        # qui écraserait des attributs stockés sur l'instance par une instance vide
+        # si le bot redémarre avant que l'utilisateur ait cliqué.
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "UPDATE ticket SET partenariat_description = %s, partenariat_pub = %s WHERE thread_id = %s",
+                        (description, pub, thread.id)
+                    )
+                await conn.commit()
+        except aiomysql.Error as e:
+            logger.critical(f"[tickets:partenariat] Erreur DB : {e}", exc_info=True)
+
         await thread.send(
             embed=discord.Embed(
                 title="Choix de la mention",
                 description="Choisis la mention souhaitée",
                 colour=discord.Colour.blurple()
             ),
-            view=MentionPartenariatView(description, pub)
+            view=MentionPartenariatView()
         )
 
 
 class MentionPartenariatView(discord.ui.View):
-    def __init__(self, description: str | None = None, pub: str | None = None):
+    """Vue persistante et sans état : la description/pub collectées plus tôt dans
+    le flux sont retrouvées dans `ticket` via le thread (voir
+    ConditionsPartenariatView.accepter, qui les y enregistre) plutôt que stockées
+    sur l'instance."""
+
+    def __init__(self):
         super().__init__(timeout=None)
-        self.description = description
-        self.pub = pub
 
     @discord.ui.select(options=[
         discord.SelectOption(label="Aucune mention", description="Aucune mention sur ton serveur", emoji="🚫"),
@@ -681,11 +709,27 @@ class MentionPartenariatView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
         mention = select.values[0]
         channel = interaction.message.channel
+
+        description = pub = None
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "SELECT partenariat_description, partenariat_pub FROM ticket WHERE thread_id = %s",
+                        (channel.id,)
+                    )
+                    row = await c.fetchone()
+            if row is not None:
+                description, pub = row
+        except aiomysql.Error as e:
+            logger.critical(f"[tickets:mention] Erreur DB : {e}", exc_info=True)
+
         await interaction.response.send_message(f"Mention choisie : {mention}")
         embed = discord.Embed(title="Informations collectées !",
                               description="Toutes les informations de ton serveur ont été récupérées. S'il en manque, le staff te les demandera.")
-        embed.add_field(name="Description du serveur", value=self.description or "Non renseignée", inline=False)
-        embed.add_field(name="Publicité", value=self.pub or "Non renseignée", inline=False)
+        embed.add_field(name="Description du serveur", value=description or "Non renseignée", inline=False)
+        embed.add_field(name="Publicité", value=pub or "Non renseignée", inline=False)
         embed.add_field(name="Mention souhaitée", value=mention, inline=False)
         embed.add_field(name="Tu pourrais te demander : je fais quoi maintenant ?",
                         value="Tu attends que le staff traite ta demande. Reste toujours disponible pour aller le plus vite. En attendant, je t'envoie la pub de Pixel Party.", inline=False)

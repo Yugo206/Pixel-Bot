@@ -48,6 +48,13 @@ class Trade(commands.Cog):
     @app_commands.command(name="trade-brainrot", description="Fais une annonce pour trade ton brainrot")
     @app_commands.describe(brainrot="Quel brainrot veux-tu trade ?", argent="Combien d'argent /s fait ton brainrot ?", note="Note supplémentaire")
     async def trade_brainrot(self, interaction: discord.Interaction, brainrot: str, argent: str, note: str | None = None):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Cette commande n'est pas disponible en MP. Utilise-la directement sur le serveur !",
+                ephemeral=True
+            )
+            return
+
         channel_id = os.getenv("CHANNEL_TRADE_ID")
         channel = interaction.guild.get_channel(int(channel_id)) if channel_id else None
         if channel is None and channel_id:

@@ -8,8 +8,8 @@ import discord
 from cogs.setupticket import TicketCreateView
 from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView, ConfirmationClotureView
 from cogs.trade import TradeView
-from cogs.warn import RefuseroracceptercontestationView
-from cogs.recrutement import ConditionsSelect, FormulaireBouton
+from cogs.warn import RefuseroracceptercontestationView, ContestationView
+from cogs.recrutement import ConditionsSelect, FormulaireBouton, Accepterview
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -76,6 +76,8 @@ class Events(commands.Cog):
             self.bot.add_view(FormulaireBouton())
             self.bot.add_view(TradeView())
             self.bot.add_view(RefuseroracceptercontestationView())
+            self.bot.add_view(ContestationView())
+            self.bot.add_view(Accepterview())
         except Exception as e:
             logger.error(f"[on_ready] Erreur lors de l'enregistrement des vues persistantes : {e}")
 
