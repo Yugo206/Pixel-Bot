@@ -289,7 +289,7 @@ COGS = [
     "cogs.tickets",
     "cogs.events",
     "cogs.trade",
-    "cogs.setupticket",
+    "cogs.creermessage",
     "cogs.warn",
     "cogs.recrutement",
 ]
