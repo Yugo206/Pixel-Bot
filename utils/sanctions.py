@@ -39,6 +39,18 @@ async def apply_warn_sanction(guild, membre: discord.Member, channel, warn_count
     reason = f"{warn_count} {reason_suffix}"
 
     if sanction["type"] == "timeout":
+        # Le timeout Discord n'existe que pour un membre toujours présent sur le
+        # serveur : selon d'où vient l'appel, `membre` peut être un simple
+        # discord.User (ex: membre ayant quitté le serveur — voir SatisfactionView
+        # dans cogs/tickets.py) qui n'a pas de méthode .timeout(). On l'évite
+        # proprement ici plutôt que de laisser planter chaque appelant.
+        if not isinstance(membre, discord.Member):
+            if channel:
+                await channel.send(
+                    f"⚠️ {membre} n'est plus sur le serveur, impossible de le mute ({sanction['label']})."
+                )
+            return
+
         until = discord.utils.utcnow() + timedelta(hours=sanction["hours"], days=sanction["days"])
 
         try:

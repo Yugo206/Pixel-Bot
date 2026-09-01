@@ -93,14 +93,22 @@ class Accepterview(discord.ui.View):
                     guild = interaction.guild
                     membre = guild.get_member(user_id)
                     if membre is None:
-                        membre = await guild.fetch_member(user_id)
+                        try:
+                            membre = await guild.fetch_member(user_id)
+                        except discord.NotFound:
+                            membre = None
+                    # Nettoyage fait dans tous les cas (même si le membre a quitté le
+                    # serveur) : sinon sa candidature reste bloquée "en cours" à vie
+                    # (voir ConditionsSelect.commencer, qui refuse toute nouvelle
+                    # candidature tant que cette ligne existe).
                     await cursor.execute("DELETE FROM role_special WHERE user_id = %s", (user_id,))
                 await conn.commit()
         except aiomysql.Error as e:
             await interaction.followup.send(f"❌ Erreur de base de données : {e}")
             return
-        except discord.NotFound:
-            await interaction.followup.send("❌ Ce membre n'est plus sur le serveur.")
+
+        if membre is None:
+            await interaction.followup.send("❌ Ce membre n'est plus sur le serveur, sa candidature a été retirée.")
             return
 
         embed = discord.Embed(title="Candidature acceptée",
@@ -131,6 +139,7 @@ class Accepterview(discord.ui.View):
                 await membre.add_roles(role)
             except discord.Forbidden:
                 await interaction.followup.send(f"❌ Impossible d'ajouter le rôle à {membre.mention} (permissions insuffisantes).")
+                return
 
         pool = get_pool()
         async with pool.acquire() as conn:
@@ -203,15 +212,29 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
 
             msg = await channel.send(embed=embed, view=Accepterview())
 
-            # DB
+            # DB — contrainte UNIQUE(user_id) sur role_special (voir
+            # utils/setupdatabase.py) : si ce membre a déjà une candidature en cours
+            # (ex: double clic sur "Commencer" avant que la première n'ait été
+            # enregistrée), l'INSERT échoue au lieu de créer un doublon silencieux.
             pool = get_pool()
-            async with pool.acquire() as conn:
-                async with conn.cursor() as c:
-                    await c.execute(
-                        "INSERT INTO role_special (user_id, status, message_accepter_id) VALUES (%s, %s, %s)",
-                        (interaction.user.id, 1, msg.id)
-                    )
-                await conn.commit()
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as c:
+                        await c.execute(
+                            "INSERT INTO role_special (user_id, status, message_accepter_id) VALUES (%s, %s, %s)",
+                            (interaction.user.id, 1, msg.id)
+                        )
+                    await conn.commit()
+            except aiomysql.IntegrityError:
+                try:
+                    await msg.delete()
+                except discord.HTTPException:
+                    pass
+                await interaction.followup.send(
+                    "❌ Tu as déjà une candidature en cours (soumise en parallèle) — celle-ci n'a pas été enregistrée.",
+                    ephemeral=True
+                )
+                return
 
 
         except Exception as e:

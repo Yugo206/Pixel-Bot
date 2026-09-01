@@ -84,6 +84,47 @@ RARETES_VALIDES = {
 }
 
 
+async def increment_warn(user_id: int) -> int:
+    """Incrémente utilisateurs.warn de 1 pour user_id (crée la ligne si besoin) et
+    renvoie la nouvelle valeur, de façon atomique.
+
+    Remplace le pattern SELECT puis UPDATE utilisé auparavant pour /warn, la
+    satisfaction de ticket et l'acceptation de contestation : deux warns posés au
+    même moment pour le même membre lisaient tous les deux l'ancienne valeur et
+    écrasaient le résultat l'un de l'autre, perdant un incrément. Ici, le verrou de
+    ligne pris par INSERT ... ON DUPLICATE KEY UPDATE est conservé jusqu'au commit
+    (autocommit=False), donc le SELECT qui suit sur la même connexion voit toujours
+    la valeur qu'on vient d'écrire."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO utilisateurs (user_id, warn) VALUES (%s, 1) "
+                "ON DUPLICATE KEY UPDATE warn = COALESCE(warn, 0) + 1",
+                (user_id,)
+            )
+            await cur.execute("SELECT warn FROM utilisateurs WHERE user_id = %s", (user_id,))
+            (new_warn,) = await cur.fetchone()
+        await conn.commit()
+    return new_warn
+
+
+async def decrement_warn(user_id: int) -> int:
+    """Décrémente utilisateurs.warn de 1 pour user_id (sans descendre sous 0) et
+    renvoie la nouvelle valeur, de façon atomique — même principe qu'increment_warn."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE utilisateurs SET warn = GREATEST(COALESCE(warn, 0) - 1, 0) WHERE user_id = %s",
+                (user_id,)
+            )
+            await cur.execute("SELECT warn FROM utilisateurs WHERE user_id = %s", (user_id,))
+            row = await cur.fetchone()
+        await conn.commit()
+    return row[0] if row and row[0] is not None else 0
+
+
 async def ajouter_rarete(user_id: int, rarete: str):
     if rarete not in RARETES_VALIDES:
         raise ValueError("Rareté invalide")

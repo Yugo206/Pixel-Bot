@@ -64,7 +64,14 @@ TABLES = {
         # Message MP envoyé au modérateur à la fermeture automatique (voir
         # ConfirmationClotureView dans cogs/tickets.py) : permet de relier sa réponse
         # (clic sur le select) au bon ticket sans dépendre d'un salon/thread.
-        "mod_dm_message_id BIGINT"
+        "mod_dm_message_id BIGINT",
+        # Description/pub collectées dans le flux "ticket partenariat" (voir
+        # ConditionsPartenariatView.accepter dans cogs/tickets.py), enregistrées ici
+        # plutôt que gardées uniquement sur l'instance de MentionPartenariatView :
+        # cette dernière est enregistrée globalement au démarrage (bot.add_view) pour
+        # rester persistante, ce qui écraserait des attributs stockés sur l'instance.
+        "partenariat_description TEXT",
+        "partenariat_pub TEXT"
     ],
     "role_special": [
         "id INT NOT NULL PRIMARY KEY AUTO_INCREMENT",
@@ -168,6 +175,9 @@ async def init_db(pool: aiomysql.Pool):
             # 5️⃣ Contrainte UNIQUE sur ticket.thread_id (voir _migrate_ticket_thread_unique).
             await _migrate_ticket_thread_unique(c)
 
+            # 6️⃣ Contrainte UNIQUE sur role_special.user_id (voir _migrate_role_special_user_unique).
+            await _migrate_role_special_user_unique(c)
+
         await conn.commit()
 
 
@@ -218,3 +228,28 @@ async def _migrate_ticket_thread_unique(c):
         ON t1.thread_id = t2.thread_id AND t1.ticket_id < t2.ticket_id
     """)
     await c.execute("ALTER TABLE ticket ADD CONSTRAINT thread_id_unique UNIQUE (thread_id)")
+
+
+async def _migrate_role_special_user_unique(c):
+    """Ajoute une contrainte UNIQUE(user_id) sur `role_special` si elle n'existe pas déjà.
+
+    Sans cette contrainte, la vérification "candidature déjà en cours" de
+    ConditionsSelect.commencer (cogs/recrutement.py) — un simple SELECT fait bien
+    avant l'INSERT, qui n'arrive que plusieurs minutes après (aller-retour MP +
+    formulaire) — laisse une fenêtre où deux clics créent deux candidatures pour
+    le même membre. Dédoublonne d'abord par sécurité (garde la ligne la plus
+    récente par user_id) : idempotent, sans effet une fois la contrainte posée."""
+    await c.execute(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'role_special' AND INDEX_NAME = 'user_id_unique'"
+    )
+    (already_done,) = await c.fetchone()
+    if already_done:
+        return
+
+    await c.execute("""
+        DELETE t1 FROM role_special t1
+        INNER JOIN role_special t2
+        ON t1.user_id = t2.user_id AND t1.id < t2.id
+    """)
+    await c.execute("ALTER TABLE role_special ADD CONSTRAINT user_id_unique UNIQUE (user_id)")
