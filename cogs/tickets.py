@@ -220,14 +220,17 @@ class SatisfactionView(discord.ui.View):
         warn_id = None
 
         try:
-            # Incrément atomique (voir utils/database.py) : évite que ce warn et un
-            # /warn (ou une autre satisfaction de ticket) posés au même moment sur ce
-            # membre ne s'écrasent l'un l'autre.
-            warn_count = await increment_warn(membre.id)
-
             iso_time = datetime.now(timezone.utc).isoformat()
 
             async with pool.acquire() as conn:
+                # Incrément atomique (voir utils/database.py) : évite que ce warn et
+                # un /warn (ou une autre satisfaction de ticket) posés au même
+                # moment sur ce membre ne s'écrasent l'un l'autre. Fait dans la même
+                # transaction que l'INSERT INTO warns ci-dessous (un seul commit) :
+                # si l'un des deux échoue, l'autre est annulé plutôt que de
+                # désynchroniser le compteur de l'historique des warns.
+                warn_count = await increment_warn(conn, membre.id)
+
                 async with conn.cursor() as c:
                     await c.execute(
                         "INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso) VALUES (%s, %s, %s, %s, %s)",
@@ -357,16 +360,26 @@ class ConfirmationClotureView(discord.ui.View):
             return
 
         await thread.edit(archived=False, locked=False)
+        # On rattache un FermerView tout neuf au message de réouverture : l'ancien
+        # message "Gestionnaire de ticket" a déjà son bouton désactivé (voir
+        # FermerView.create) et son id n'est pas conservé en base, donc sans ça le
+        # ticket rouvert n'a plus aucun moyen de le refermer depuis Discord.
         await thread.send(
-            f"🔓 Ce ticket a été rouvert par {interaction.user.mention} suite à la fermeture automatique pour inactivité."
+            f"🔓 Ce ticket a été rouvert par {interaction.user.mention} suite à la fermeture automatique pour inactivité.",
+            view=FermerView()
         )
 
         try:
+            # last_message et warn_12h sont remis à zéro comme si le membre venait de
+            # répondre (voir on_message dans cogs/events.py) : sinon ticket_watcher
+            # relit l'ancien timestamp d'inactivité au prochain passage (120s) et
+            # referme aussitôt le ticket qu'on vient de rouvrir.
+            now_ts = int(time.time())
             async with pool.acquire() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
-                        "UPDATE ticket SET statut = 2, closed_at = NULL WHERE thread_id = %s",
-                        (thread_id,)
+                        "UPDATE ticket SET statut = 2, closed_at = NULL, last_message = %s, warn_12h = NULL WHERE thread_id = %s",
+                        (now_ts, thread_id)
                     )
                 await conn.commit()
         except aiomysql.Error as e:

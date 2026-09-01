@@ -65,13 +65,23 @@ async def ticket_watcher():
     # sinon un seul appel Discord lent pendant la boucle garde une connexion du pool
     # occupée pour rien, alors que le pool est volontairement restreint, voir
     # utils/database.py).
-    async with pool.acquire() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute("""
-            SELECT thread_id, last_message, warn_12h, closed_at, statut, modo_id
-            FROM ticket
-            """)
-            tickets = await cur.fetchall()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute("""
+                SELECT thread_id, last_message, warn_12h, closed_at, statut, modo_id
+                FROM ticket
+                """)
+                tickets = await cur.fetchall()
+    except Exception as e:
+        # Le corps de la boucle par ticket est déjà protégé (try/except plus bas),
+        # mais sans ce garde-fou une erreur DB transitoire ici lèverait hors de
+        # ticket_watcher() : discord.ext.tasks arrête alors la boucle
+        # définitivement (pas de relance auto), silencieusement — plus aucune
+        # relance d'inactivité ni fermeture automatique de ticket jusqu'au
+        # redémarrage du bot.
+        logger.error(f"[ticket_watcher] Erreur lors de la liste des tickets, on réessaiera au prochain passage : {e}")
+        return
 
     for thread_id, last_msg, warn_12h, closed_at, statut, modo_id in tickets:
         try:
@@ -239,7 +249,7 @@ async def staff_test_watcher():
 async def cycle_status():
     activities = [
         discord.Game("Anime Pixel Party"),
-        discord.Activity(type=discord.ActivityType.watching, name="La version 1.1.2"),
+        discord.Activity(type=discord.ActivityType.watching, name="La version 2.0.0"),
         discord.Activity(type=discord.ActivityType.listening, name="Les membres de Pixel Party"),
     ]
 

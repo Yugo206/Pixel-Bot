@@ -24,10 +24,17 @@ class MessagePersonnaliseModal(discord.ui.Modal, title="Message personnalisé"):
         couleur_embed = discord.Color.blue()
         if self.couleur.value:
             try:
-                couleur_embed = discord.Color(int(self.couleur.value.strip().lstrip("#"), 16))
+                valeur = int(self.couleur.value.strip().lstrip("#"), 16)
+                # int() seul n'exclut pas les valeurs hors plage RGB (ex: 7 chiffres
+                # hexa sans #) : discord.Color ne fait lui-même aucune vérification
+                # de plage, ce qui ferait échouer l'envoi de l'embed plus loin avec
+                # une erreur Discord peu claire au lieu du message ci-dessous.
+                if not (0 <= valeur <= 0xFFFFFF):
+                    raise ValueError("Valeur hors de la plage RGB (000000-FFFFFF).")
+                couleur_embed = discord.Color(valeur)
             except ValueError:
                 await interaction.response.send_message(
-                    "❌ Couleur invalide : utilise un code hexadécimal, par exemple `#5865F2`.",
+                    "❌ Couleur invalide : utilise un code hexadécimal à 6 chiffres, par exemple `#5865F2`.",
                     ephemeral=True
                 )
                 return

@@ -174,7 +174,21 @@ class Accepterview(discord.ui.View):
             await interaction.response.send_message(f"❌ Erreur : {e}", ephemeral=True)
             return
         except discord.NotFound:
-            await interaction.response.send_message("❌ Ce membre n'est plus sur le serveur.", ephemeral=True)
+            # Même nettoyage que Accepterview.accepter dans ce cas : sinon, avec la
+            # contrainte UNIQUE(user_id) sur role_special, ce membre ne pourrait
+            # plus jamais repostuler même en revenant sur le serveur.
+            try:
+                pool = get_pool()
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cursor:
+                        await cursor.execute("DELETE FROM role_special WHERE user_id = %s", (user_id,))
+                    await conn.commit()
+            except aiomysql.Error as e:
+                await interaction.response.send_message(f"❌ Erreur de base de données : {e}", ephemeral=True)
+                return
+            await interaction.response.send_message(
+                "❌ Ce membre n'est plus sur le serveur, sa candidature a été retirée.", ephemeral=True
+            )
             return
 
         await interaction.response.send_modal(RaisonModal(interaction.message, membre))

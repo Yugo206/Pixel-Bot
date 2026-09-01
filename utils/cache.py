@@ -34,8 +34,13 @@ async def get_xp(pool: aiomysql.Pool, user_id: int) -> int:
             xp = (await cur.fetchone())[0]
         await conn.commit()
 
-    _xp_cache[user_id] = xp
-    return xp
+    # setdefault (pas une affectation directe) : si un autre appel concurrent pour
+    # ce même membre a rempli le cache pendant cet aller-retour DB (et l'a déjà
+    # fait avancer via bump_xp, ex: deux premiers messages très rapprochés d'un
+    # membre pas encore en cache), on ne veut pas écraser cette valeur plus
+    # fraîche avec celle, désormais périmée, qu'on vient de lire.
+    _xp_cache.setdefault(user_id, xp)
+    return _xp_cache[user_id]
 
 
 def bump_xp(user_id: int, gain: int) -> int:

@@ -111,16 +111,31 @@ class RefuseroracceptercontestationView(discord.ui.View):
             # contestation comme traitée alors que le warn est toujours là.
             await interaction.response.defer()
 
-            await decrement_warn(membre_id)
-
             async with pool.acquire() as conn:
+                # Réclame la contestation de façon atomique avant de toucher au
+                # compteur : si un double clic (ou deux modérateurs) arrivent en
+                # même temps, un seul des deux DELETE obtient rowcount == 1 et
+                # décrémente réellement le warn — l'autre voit juste que c'est déjà
+                # traité au lieu de décrémenter deux fois.
                 async with conn.cursor() as cur:
-                    if warn_id is not None:
-                        await cur.execute("DELETE FROM warns WHERE id = %s", (warn_id,))
-
                     await cur.execute("DELETE FROM contestations WHERE message_id = %s", (interaction.message.id,))
+                    gagne = cur.rowcount == 1
+
+                if gagne:
+                    # Même transaction que le DELETE ci-dessus (un seul commit) : si
+                    # le décrément ou la suppression du warn échoue, la ligne de
+                    # contestation qu'on vient de réclamer n'est pas perdue pour rien.
+                    await decrement_warn(conn, membre_id)
+
+                    if warn_id is not None:
+                        async with conn.cursor() as cur:
+                            await cur.execute("DELETE FROM warns WHERE id = %s", (warn_id,))
 
                 await conn.commit()
+
+            if not gagne:
+                await interaction.followup.send("❌ Cette contestation a déjà été traitée.", ephemeral=True)
+                return
 
             for b in self.children:
                 b.disabled = True
@@ -263,41 +278,48 @@ class Warn(commands.Cog):
     # boucles de nettoyage (voir check_temp_roles dans cogs/boutique.py).
     @tasks.loop(minutes=5)
     async def check_tempbans(self):
-        now = int(time.time())
-        pool = get_pool()
-
-        async with pool.acquire() as conn:
-            async with conn.cursor() as c:
-                await c.execute(
-                    "SELECT user_id FROM temp_bans WHERE unban_at <= %s",
-                    (now,)
-                )
-                bans = await c.fetchall()
-
-        if not bans:
-            return
-
-        guild_id = os.getenv("GUILD_ID")
-        if not guild_id:
-            return
-        guild = self.bot.get_guild(int(guild_id))
-        if not guild:
-            return
-
-        for (user_id,) in bans:
-            try:
-                user = await self.bot.fetch_user(user_id)
-                await guild.unban(user, reason="Fin du ban temporaire")
-            except (discord.NotFound, discord.Forbidden):
-                pass
+        try:
+            now = int(time.time())
+            pool = get_pool()
 
             async with pool.acquire() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
-                        "DELETE FROM temp_bans WHERE user_id = %s",
-                        (user_id,)
+                        "SELECT user_id FROM temp_bans WHERE unban_at <= %s",
+                        (now,)
                     )
-                await conn.commit()
+                    bans = await c.fetchall()
+
+            if not bans:
+                return
+
+            guild_id = os.getenv("GUILD_ID")
+            if not guild_id:
+                return
+            guild = self.bot.get_guild(int(guild_id))
+            if not guild:
+                return
+
+            for (user_id,) in bans:
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    await guild.unban(user, reason="Fin du ban temporaire")
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as c:
+                        await c.execute(
+                            "DELETE FROM temp_bans WHERE user_id = %s",
+                            (user_id,)
+                        )
+                    await conn.commit()
+        except Exception as e:
+            # Sans ce garde-fou, une erreur DB transitoire ici lèverait hors de
+            # check_tempbans() : discord.ext.tasks arrête alors la boucle
+            # définitivement et silencieusement — plus aucun débannissement
+            # automatique jusqu'au redémarrage du bot.
+            logger.error(f"[check_tempbans] Erreur inattendue, on réessaiera au prochain passage : {e}")
 
     @check_tempbans.before_loop
     async def before_tempbans(self):
@@ -321,15 +343,19 @@ class Warn(commands.Cog):
         membre = user
 
         try:
-            # Incrément atomique (voir utils/database.py) : évite que deux warns posés
-            # au même moment sur le même membre ne s'écrasent l'un l'autre.
-            warn_count = await increment_warn(membre.id)
-
             timestamp = int(time.time())
             iso_time = datetime.now(timezone.utc).isoformat()
 
             pool = get_pool()
             async with pool.acquire() as conn:
+                # Incrément atomique (voir utils/database.py) : évite que deux warns
+                # posés au même moment sur le même membre ne s'écrasent l'un
+                # l'autre. Fait dans la même transaction que l'INSERT INTO warns
+                # ci-dessous (un seul commit) : si l'un des deux échoue, l'autre est
+                # annulé plutôt que de désynchroniser le compteur de l'historique
+                # des warns.
+                warn_count = await increment_warn(conn, membre.id)
+
                 async with conn.cursor() as c:
                     await c.execute(
                         """

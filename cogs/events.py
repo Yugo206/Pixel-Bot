@@ -147,23 +147,39 @@ class Events(commands.Cog):
             xp_apres = cache.bump_xp(message.author.id, xp_gain)
             level_apres = self.get_level(xp_apres)
 
+            # Écriture DB juste après le bump du cache, avant tout autre await
+            # (notamment l'annonce de niveau ci-dessous) : sinon une erreur ou une
+            # latence sur cet envoi Discord retarderait d'autant la persistance du
+            # gain, et surtout empêcherait process_commands de s'exécuter pour ce
+            # message si l'envoi lève une exception non interceptée.
+            # Incrément relatif (et non une valeur absolue) : reste correct même si
+            # deux messages du même membre finissent par s'exécuter en parallèle.
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cursor:
+                        await cursor.execute(
+                            "UPDATE utilisateurs SET xp = xp + %s, argent = argent + %s WHERE user_id = %s",
+                            (xp_gain, argent_gain, message.author.id)
+                        )
+                    await conn.commit()
+            except aiomysql.Error as e:
+                # Le cache a déjà pris en compte ce gain (bump_xp ci-dessus) mais
+                # l'écriture en base a échoué : on invalide l'entrée pour forcer une
+                # relecture depuis la DB au prochain message, plutôt que de laisser
+                # le cache indéfiniment en avance sur une valeur jamais persistée.
+                logger.error(f"[on_message] Erreur DB lors du gain d'XP/argent de {message.author.id} : {e}")
+                cache.invalidate_xp(message.author.id)
+
             if level_apres > level_avant:
                 channel_id = os.getenv("CHANNEL_COMMANDE_ID")
                 channel = message.guild.get_channel(int(channel_id)) if channel_id else None
                 if channel:
-                    await channel.send(
-                        f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
-                    )
-
-            # Incrément relatif (et non une valeur absolue) : reste correct même si
-            # deux messages du même membre finissent par s'exécuter en parallèle.
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute(
-                        "UPDATE utilisateurs SET xp = xp + %s, argent = argent + %s WHERE user_id = %s",
-                        (xp_gain, argent_gain, message.author.id)
-                    )
-                await conn.commit()
+                    try:
+                        await channel.send(
+                            f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
+                        )
+                    except discord.HTTPException as e:
+                        logger.warning(f"[on_message] Impossible d'annoncer le niveau de {message.author.id} : {e}")
 
         # IMPORTANT pour les commandes
         await self.bot.process_commands(message)
