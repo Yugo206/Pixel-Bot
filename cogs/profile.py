@@ -42,8 +42,12 @@ JEUX_PLATEFORMES = [
     {"id": "gta", "label": "🚗 GTA", "role_env": "ROLE_GTA",
      "questions": [("gta_pseudo", "Pseudo GTA / Rockstar Social Club")]},
     {"id": "roblox", "label": "🧱 Roblox", "role_env": "ROLE_ROBLOX",
+     # Le label d'un TextInput de modal est limité à 45 caractères côté Discord :
+     # l'ancien libellé ("Tu joues souvent ? (rarement / parfois / souvent)", 49
+     # caractères) faisait échouer l'envoi du modal (HTTPException), donc le clic
+     # sur "🧱 Roblox" ne faisait jamais rien de visible pour le membre.
      "questions": [("roblox_pseudo", "Pseudo Roblox"),
-                   ("roblox_frequence", "Tu joues souvent ? (rarement / parfois / souvent)")]},
+                   ("roblox_frequence", "Fréquence (rarement / parfois / souvent)")]},
 ]
 
 # Reverse-map clé DB -> libellé, pour afficher les réponses sur /profil sans reparcourir

@@ -49,7 +49,15 @@ class DiscordErrorHandler(logging.Handler):
 
     async def _notify_owner(self, record: logging.LogRecord) -> None:
         user = self.bot.get_user(self.owner_id) or await self.bot.fetch_user(self.owner_id)
-        text = f"🚨 **[{record.levelname}] {record.name}**\n```{record.getMessage()[:1900]}```"
+        # record.getMessage() seul ne contient que le message ("Ignoring exception in
+        # view ... for item ..."), jamais la traceback (record.exc_info) : sans elle,
+        # cette alerte MP ne permettait pas de savoir quelle ligne avait échoué ni
+        # pourquoi, seulement qu'une erreur avait eu lieu quelque part.
+        contenu = record.getMessage()
+        traceback_txt = self._format_traceback(record)
+        if traceback_txt:
+            contenu = f"{contenu}\n{traceback_txt}"
+        text = f"🚨 **[{record.levelname}] {record.name}**\n```{contenu[:1900]}```"
         await user.send(text)
 
     async def _store_error(self, record: logging.LogRecord) -> None:
