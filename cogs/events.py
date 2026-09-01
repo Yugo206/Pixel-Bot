@@ -5,16 +5,15 @@ import aiomysql
 import random
 import os
 import discord
-from cogs.setupticket import TicketCreateView
-from cogs.tickets import FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView
-from cogs.trade import TradeView
-from cogs.visite import VisiteGuidee
-from cogs.warn import RefuseroracceptercontestationView
-from cogs.recrutement import ConditionsSelect, FormulaireBouton
+from cogs.tickets import TicketCreateView, FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView, ConfirmationClotureView
+from cogs.trade import TradeView, TradePanelView
+from cogs.warn import RefuseroracceptercontestationView, ContestationView
+from cogs.recrutement import ConditionsSelect, FormulaireBouton, Accepterview
 from dotenv import load_dotenv
 load_dotenv()
 
 from utils.database import get_pool
+from utils import cache
 
 logger = logging.getLogger(__name__)
 
@@ -71,15 +70,14 @@ class Events(commands.Cog):
             self.bot.add_view(ConditionsPartenariatView())
             self.bot.add_view(MentionPartenariatView())
             self.bot.add_view(SatisfactionView())
+            self.bot.add_view(ConfirmationClotureView())
             self.bot.add_view(ConditionsSelect())
             self.bot.add_view(FormulaireBouton())
             self.bot.add_view(TradeView())
+            self.bot.add_view(TradePanelView())
             self.bot.add_view(RefuseroracceptercontestationView())
-            # Les custom_id des boutons de VisiteGuidee dépendent de l'étape :
-            # on enregistre les 3 configurations possibles pour couvrir tous les boutons.
-            self.bot.add_view(VisiteGuidee(1))
-            self.bot.add_view(VisiteGuidee(2))
-            self.bot.add_view(VisiteGuidee(5))
+            self.bot.add_view(ContestationView())
+            self.bot.add_view(Accepterview())
         except Exception as e:
             logger.error(f"[on_ready] Erreur lors de l'enregistrement des vues persistantes : {e}")
 
@@ -91,6 +89,7 @@ class Events(commands.Cog):
                 async with conn.cursor() as cursor:
                     await cursor.execute("DELETE FROM utilisateurs WHERE user_id = %s", (member.id,))
                 await conn.commit()
+            cache.invalidate_xp(member.id)
         except aiomysql.Error as e:
             channel_id = os.getenv("CHANNEL_COMMANDE_ID")
             if not channel_id:
@@ -132,65 +131,70 @@ class Events(commands.Cog):
                 await conn.commit()
 
         # L'économie (argent/XP) ne s'applique qu'aux messages envoyés sur le serveur.
+        # Lecture de l'XP actuelle via le cache mémoire (utils/cache.py) au lieu d'un
+        # SELECT à chaque message : la valeur ne change qu'à un message de ce membre
+        # ou à un achat en boutique, pas besoin de la relire en base à chaque fois.
         if message.guild is not None:
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute(
-                        "INSERT IGNORE INTO utilisateurs (user_id, xp) VALUES (%s, 40)",
-                        (message.author.id,)
-                    )
+            xp_actuel = await cache.get_xp(pool, message.author.id)
+            level_avant = self.get_level(xp_actuel)
 
-                    await cursor.execute("SELECT xp FROM utilisateurs WHERE user_id = %s", (message.author.id,))
-                    xp_actuel = (await cursor.fetchone())[0]
+            xp_gain = random.randint(1, 10)
+            argent_gain = random.randint(5, 15)
 
-                    level_avant = self.get_level(xp_actuel)
+            # Cache mis à jour tout de suite (synchrone, avant le premier await
+            # ci-dessous) : si un autre message du même membre est traité entre
+            # temps, il verra déjà cette valeur au lieu d'une valeur périmée.
+            xp_apres = cache.bump_xp(message.author.id, xp_gain)
+            level_apres = self.get_level(xp_apres)
 
-                    xp_gain = random.randint(1, 10)
-                    argent_gain = random.randint(5, 15)
+            # Écriture DB juste après le bump du cache, avant tout autre await
+            # (notamment l'annonce de niveau ci-dessous) : sinon une erreur ou une
+            # latence sur cet envoi Discord retarderait d'autant la persistance du
+            # gain, et surtout empêcherait process_commands de s'exécuter pour ce
+            # message si l'envoi lève une exception non interceptée.
+            # Incrément relatif (et non une valeur absolue) : reste correct même si
+            # deux messages du même membre finissent par s'exécuter en parallèle.
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cursor:
+                        await cursor.execute(
+                            "UPDATE utilisateurs SET xp = xp + %s, argent = argent + %s WHERE user_id = %s",
+                            (xp_gain, argent_gain, message.author.id)
+                        )
+                    await conn.commit()
+            except aiomysql.Error as e:
+                # Le cache a déjà pris en compte ce gain (bump_xp ci-dessus) mais
+                # l'écriture en base a échoué : on invalide l'entrée pour forcer une
+                # relecture depuis la DB au prochain message, plutôt que de laisser
+                # le cache indéfiniment en avance sur une valeur jamais persistée.
+                logger.error(f"[on_message] Erreur DB lors du gain d'XP/argent de {message.author.id} : {e}")
+                cache.invalidate_xp(message.author.id)
 
-                    xp_apres = xp_actuel + xp_gain
-                    level_apres = self.get_level(xp_apres)
-
-                    if level_apres > level_avant:
-                        channel_id = os.getenv("CHANNEL_COMMANDE_ID")
-                        channel = message.guild.get_channel(int(channel_id)) if channel_id else None
-                        if channel:
-                            await channel.send(
-                                f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
-                            )
-
-                    await cursor.execute(
-                        "UPDATE utilisateurs SET xp = %s, argent = argent + %s WHERE user_id = %s",
-                        (xp_apres, argent_gain, message.author.id)
-                    )
-
-                await conn.commit()
+            if level_apres > level_avant:
+                channel_id = os.getenv("CHANNEL_COMMANDE_ID")
+                channel = message.guild.get_channel(int(channel_id)) if channel_id else None
+                if channel:
+                    try:
+                        await channel.send(
+                            f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
+                        )
+                    except discord.HTTPException as e:
+                        logger.warning(f"[on_message] Impossible d'annoncer le niveau de {message.author.id} : {e}")
 
         # IMPORTANT pour les commandes
         await self.bot.process_commands(message)
 
     @commands.Cog.listener()
     async def on_member_join(self, member):
+        # L'accueil (questions/rôles) passe désormais par l'onboarding natif Discord
+        # (Server Settings > Onboarding) — plus d'envoi de MP ici, qui échouait
+        # silencieusement pour les membres ayant fermé leurs messages privés.
         if member.id in BLACKLIST:
             try:
-                await member.send("Tu as été blacklisté du serveur. Kick immediat.")
+                await member.send("Tu as été blacklisté du serveur. Kick immédiat.")
             except discord.Forbidden:
                 pass
             await member.kick(reason="Membre blacklisté")
-            return
-
-        embed = discord.Embed(
-            title="👋 Bienvenue !",
-            description=f"Salut {member.mention} ! Prêt pour la visite du serveur ?",
-            color=discord.Color.blurple(),
-        )
-
-        view = VisiteGuidee(1)
-
-        try:
-            await member.send(embed=embed, view=view)
-        except discord.Forbidden:
-            pass
 
 
 async def setup(bot):

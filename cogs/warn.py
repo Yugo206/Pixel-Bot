@@ -4,14 +4,30 @@ from discord.ext import commands, tasks
 import aiomysql
 import logging
 import os
+import re
 from datetime import datetime, timezone
 import time
 from dotenv import load_dotenv
 load_dotenv()
-from utils.database import get_pool
+from utils.database import get_pool, increment_warn, decrement_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 
 logger = logging.getLogger(__name__)
+
+_WARN_ID_RE = re.compile(r"ID du warn\s*:\s*(\d+)")
+
+
+def _extract_warn_id(message: discord.Message) -> int | None:
+    """Retrouve l'id du warn concerné depuis le footer de l'embed du message cliqué
+    (voir ContestationView, rendue sans état pour rester persistante après un
+    redémarrage — elle ne peut donc pas garder `warn` sur l'instance)."""
+    if not message.embeds:
+        return None
+    footer_text = message.embeds[0].footer.text
+    if not footer_text:
+        return None
+    match = _WARN_ID_RE.search(footer_text)
+    return int(match.group(1)) if match else None
 
 
 class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
@@ -89,25 +105,41 @@ class RefuseroracceptercontestationView(discord.ui.View):
                 except discord.NotFound:
                     membre = None
 
-            for b in self.children:
-                b.disabled = True
-            await interaction.response.edit_message(view=self)
+            # On defer avant de toucher la DB (et on n'édite le message qu'une fois
+            # la suppression du warn effectivement commit) : si la DB échoue, le
+            # modérateur voit une erreur et peut réessayer, au lieu de voir la
+            # contestation comme traitée alors que le warn est toujours là.
+            await interaction.response.defer()
 
             async with pool.acquire() as conn:
+                # Réclame la contestation de façon atomique avant de toucher au
+                # compteur : si un double clic (ou deux modérateurs) arrivent en
+                # même temps, un seul des deux DELETE obtient rowcount == 1 et
+                # décrémente réellement le warn — l'autre voit juste que c'est déjà
+                # traité au lieu de décrémenter deux fois.
                 async with conn.cursor() as cur:
-                    await cur.execute("SELECT warn FROM utilisateurs WHERE user_id = %s", (membre_id,))
-                    wrow = await cur.fetchone()
-                    warn_actuel = wrow[0] if wrow and wrow[0] is not None else 0
-                    warn_ap = max(warn_actuel - 1, 0)
+                    await cur.execute("DELETE FROM contestations WHERE message_id = %s", (interaction.message.id,))
+                    gagne = cur.rowcount == 1
 
-                    await cur.execute("UPDATE utilisateurs SET warn = %s WHERE user_id = %s", (warn_ap, membre_id))
+                if gagne:
+                    # Même transaction que le DELETE ci-dessus (un seul commit) : si
+                    # le décrément ou la suppression du warn échoue, la ligne de
+                    # contestation qu'on vient de réclamer n'est pas perdue pour rien.
+                    await decrement_warn(conn, membre_id)
 
                     if warn_id is not None:
-                        await cur.execute("DELETE FROM warns WHERE id = %s", (warn_id,))
-
-                    await cur.execute("DELETE FROM contestations WHERE message_id = %s", (interaction.message.id,))
+                        async with conn.cursor() as cur:
+                            await cur.execute("DELETE FROM warns WHERE id = %s", (warn_id,))
 
                 await conn.commit()
+
+            if not gagne:
+                await interaction.followup.send("❌ Cette contestation a déjà été traitée.", ephemeral=True)
+                return
+
+            for b in self.children:
+                b.disabled = True
+            await interaction.edit_original_response(view=self)
 
             if membre is not None:
                 embed = discord.Embed(
@@ -123,8 +155,18 @@ class RefuseroracceptercontestationView(discord.ui.View):
                     pass
 
             await interaction.followup.send("Sanction retirée ✅", ephemeral=True)
+        except aiomysql.Error as e:
+            logger.critical(f"[warn:accepter] Erreur DB : {e}", exc_info=True)
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Une erreur de base de données est survenue, réessaie.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Une erreur de base de données est survenue, réessaie.", ephemeral=True)
         except Exception as e:
             logger.error(f"[warn:accepter] {e}")
+            if interaction.response.is_done():
+                await interaction.followup.send("❌ Une erreur inattendue est survenue, réessaie.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Une erreur inattendue est survenue, réessaie.", ephemeral=True)
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -169,7 +211,7 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
         placeholder="Je trouve ce warn injuste car ...",
         min_length=100,
         max_length=1092,
-        label="Explique pourquoi tu trouve ce warn injuste",
+        label="Explique pourquoi tu trouves ce warn injuste",
         required=True
     )
 
@@ -177,10 +219,10 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
         super().__init__()
         self.bot = bot
         self.membre = membre
-        self.warn = warn  # tuple (id, raison, created_at) ou None
+        self.warn = warn  # tuple (id,) ou None — seul l'id est utilisé ci-dessous
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Merci, tu recevera une réponse dans les prochaines 24h", ephemeral=True)
+        await interaction.response.send_message("Merci, tu recevras une réponse sous 24h.", ephemeral=True)
 
         channel = await get_modo_channel(self.bot)
         if channel is None:
@@ -204,15 +246,21 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
 
 
 class ContestationView(discord.ui.View):
-    def __init__(self, membre, bot, warn):
+    """Vue persistante et sans état : ce bouton n'apparaît que dans le MP du membre
+    averti, donc le membre concerné est toujours interaction.user ; l'id du warn
+    est retrouvé depuis le footer de l'embed (voir _extract_warn_id) plutôt que
+    stocké sur l'instance, ce qui casserait dès l'enregistrement global via
+    bot.add_view (voir cogs/events.py) — même principe que
+    RefuseroracceptercontestationView ci-dessus."""
+
+    def __init__(self):
         super().__init__(timeout=None)
-        self.membre = membre
-        self.bot = bot
-        self.warn = warn
 
     @discord.ui.button(label="Contestation", style=discord.ButtonStyle.red, custom_id="contest", emoji="❌")
     async def contest(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(ContestationModal(self.bot, self.membre, self.warn))
+        warn_id = _extract_warn_id(interaction.message)
+        warn = (warn_id,) if warn_id is not None else None
+        await interaction.response.send_modal(ContestationModal(interaction.client, interaction.user, warn))
         button.disabled = True
         await interaction.message.edit(view=self)
 
@@ -230,55 +278,62 @@ class Warn(commands.Cog):
     # boucles de nettoyage (voir check_temp_roles dans cogs/boutique.py).
     @tasks.loop(minutes=5)
     async def check_tempbans(self):
-        now = int(time.time())
-        pool = get_pool()
-
-        async with pool.acquire() as conn:
-            async with conn.cursor() as c:
-                await c.execute(
-                    "SELECT user_id FROM temp_bans WHERE unban_at <= %s",
-                    (now,)
-                )
-                bans = await c.fetchall()
-
-        if not bans:
-            return
-
-        guild_id = os.getenv("GUILD_ID")
-        if not guild_id:
-            return
-        guild = self.bot.get_guild(int(guild_id))
-        if not guild:
-            return
-
-        for (user_id,) in bans:
-            try:
-                user = await self.bot.fetch_user(user_id)
-                await guild.unban(user, reason="Fin du ban temporaire")
-            except (discord.NotFound, discord.Forbidden):
-                pass
+        try:
+            now = int(time.time())
+            pool = get_pool()
 
             async with pool.acquire() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
-                        "DELETE FROM temp_bans WHERE user_id = %s",
-                        (user_id,)
+                        "SELECT user_id FROM temp_bans WHERE unban_at <= %s",
+                        (now,)
                     )
-                await conn.commit()
+                    bans = await c.fetchall()
+
+            if not bans:
+                return
+
+            guild_id = os.getenv("GUILD_ID")
+            if not guild_id:
+                return
+            guild = self.bot.get_guild(int(guild_id))
+            if not guild:
+                return
+
+            for (user_id,) in bans:
+                try:
+                    user = await self.bot.fetch_user(user_id)
+                    await guild.unban(user, reason="Fin du ban temporaire")
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as c:
+                        await c.execute(
+                            "DELETE FROM temp_bans WHERE user_id = %s",
+                            (user_id,)
+                        )
+                    await conn.commit()
+        except Exception as e:
+            # Sans ce garde-fou, une erreur DB transitoire ici lèverait hors de
+            # check_tempbans() : discord.ext.tasks arrête alors la boucle
+            # définitivement et silencieusement — plus aucun débannissement
+            # automatique jusqu'au redémarrage du bot.
+            logger.error(f"[check_tempbans] Erreur inattendue, on réessaiera au prochain passage : {e}")
 
     @check_tempbans.before_loop
     async def before_tempbans(self):
         await self.bot.wait_until_ready()
 
-    @app_commands.command(name="warn", description="Averti un membre")
+    @app_commands.command(name="warn", description="Avertit un membre")
     @app_commands.checks.has_permissions(manage_messages=True)
     async def warn(self, interaction: discord.Interaction, user: discord.Member, raison: str):
         await interaction.response.defer(ephemeral=True)
 
         if interaction.guild is None:
             embed = discord.Embed(
-                title="Les messages privées...",
-                description="Cette commande est indisponible en MP en raison d'optimisation de mon code... Mais tu peut aller dans <@> pour cela !",
+                title="Les messages privés...",
+                description="Cette commande n'est pas disponible en MP. Utilise-la directement sur le serveur !",
                 color=discord.Color.red()
             )
             await interaction.followup.send(embed=embed)
@@ -288,34 +343,20 @@ class Warn(commands.Cog):
         membre = user
 
         try:
+            timestamp = int(time.time())
+            iso_time = datetime.now(timezone.utc).isoformat()
+
             pool = get_pool()
             async with pool.acquire() as conn:
+                # Incrément atomique (voir utils/database.py) : évite que deux warns
+                # posés au même moment sur le même membre ne s'écrasent l'un
+                # l'autre. Fait dans la même transaction que l'INSERT INTO warns
+                # ci-dessous (un seul commit) : si l'un des deux échoue, l'autre est
+                # annulé plutôt que de désynchroniser le compteur de l'historique
+                # des warns.
+                warn_count = await increment_warn(conn, membre.id)
+
                 async with conn.cursor() as c:
-                    await c.execute(
-                        "SELECT warn FROM utilisateurs WHERE user_id = %s",
-                        (membre.id,)
-                    )
-                    result = await c.fetchone()
-
-                    if result is None:
-                        warn_count = 1
-                        await c.execute(
-                            "INSERT INTO utilisateurs (user_id, warn) VALUES (%s, %s)",
-                            (membre.id, warn_count)
-                        )
-                    elif result[0] is None:
-                        warn_count = 1
-                        await c.execute("UPDATE utilisateurs SET warn = 1 WHERE user_id = %s", (membre.id,))
-                    else:
-                        warn_count = result[0] + 1
-                        await c.execute(
-                            "UPDATE utilisateurs SET warn = %s WHERE user_id = %s",
-                            (warn_count, membre.id)
-                        )
-
-                    timestamp = int(time.time())
-                    iso_time = datetime.now(timezone.utc).isoformat()
-
                     await c.execute(
                         """
                         INSERT INTO warns (user_id, modo_id, raison, created_at, created_at_iso)
@@ -335,25 +376,25 @@ class Warn(commands.Cog):
         await apply_warn_sanction(interaction.guild, membre, channel, warn_count)
 
         await interaction.followup.send(
-            "Le membre viens d'etre averti en MP, merci !",
+            "Le membre vient d'être averti en MP, merci !",
             ephemeral=True
         )
 
         embed = discord.Embed(
-            title="Tu viens d'etre avertit",
-            description="Tu t'est mal comporté sur Pixel Party donc un avertissement vient de tomber",
+            title="Tu viens d'être averti",
+            description="Tu t'es mal comporté sur Pixel Party, donc un avertissement vient de tomber.",
             color=discord.Color.red()
         )
-        embed.add_field(name="Moderateur : ", value=modo.mention, inline=False)
+        embed.add_field(name="Modérateur : ", value=modo.mention, inline=False)
         embed.add_field(name="Raison : ", value=raison, inline=False)
         embed.add_field(
             name="C'est une erreur ?",
-            value="Clique sur le boutton ci-dessous pour contester ta sanction"
+            value="Clique sur le bouton ci-dessous pour contester ta sanction"
         )
         embed.set_footer(text=f"ID du warn : {warn_id}")
 
         try:
-            await membre.send(embed=embed, view=ContestationView(membre, self.bot, (warn_id, raison, timestamp)))
+            await membre.send(embed=embed, view=ContestationView())
         except discord.Forbidden:
             pass
 

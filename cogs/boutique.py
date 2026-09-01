@@ -8,6 +8,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from utils.database import get_pool
+from utils import cache
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +143,11 @@ class AchatSelect(discord.ui.Select):
                                 (valeur, interaction.user.id)
                             )
                             await conn.commit()
+                            # Écriture SQL directe sur xp en dehors du cache (utils/cache.py) :
+                            # on invalide plutôt que de tenter de le mettre à jour ici, pour ne
+                            # pas dupliquer la logique — la prochaine lecture (au message
+                            # suivant) revient chercher la vraie valeur en base.
+                            cache.invalidate_xp(interaction.user.id)
                             await interaction.followup.send(
                                 f"🛒 **Achat réussi !**\n\n📦 Objet : **{name}**\n💰 Prix : **{price} €**",
                                 ephemeral=True
@@ -183,54 +189,66 @@ class BoutiqueCog(commands.Cog):
     @tasks.loop(minutes=5)
     async def check_temp_roles(self):
         """Retire automatiquement les rôles temporaires achetés en boutique une fois expirés."""
-        now = int(time.time())
-        pool = get_pool()
+        try:
+            now = int(time.time())
+            pool = get_pool()
 
-        async with pool.acquire() as conn:
-            async with conn.cursor() as c:
-                await c.execute(
-                    "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'shop_purchase' AND end_time <= %s",
-                    (now,)
-                )
-                expired = await c.fetchall()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'shop_purchase' AND end_time <= %s",
+                        (now,)
+                    )
+                    expired = await c.fetchall()
 
-            if not expired:
-                return
+                if not expired:
+                    return
 
-            guild_id = os.getenv("GUILD_ID")
-            guild = None
-            if guild_id:
-                guild = self.bot.get_guild(int(guild_id))
-                if guild is None:
-                    try:
-                        guild = await self.bot.fetch_guild(int(guild_id))
-                    except discord.HTTPException:
-                        guild = None
+                guild_id = os.getenv("GUILD_ID")
+                guild = None
+                if guild_id:
+                    guild = self.bot.get_guild(int(guild_id))
+                    if guild is None:
+                        try:
+                            guild = await self.bot.fetch_guild(int(guild_id))
+                        except discord.HTTPException:
+                            guild = None
 
-            async with conn.cursor() as c:
-                for row_id, user_id, role_id in expired:
-                    try:
-                        if guild is not None:
-                            member = guild.get_member(user_id)
-                            if member is None:
-                                try:
-                                    member = await guild.fetch_member(user_id)
-                                except discord.NotFound:
-                                    member = None
-
-                            if member is not None:
-                                role = guild.get_role(role_id)
-                                if role is not None:
+                async with conn.cursor() as c:
+                    for row_id, user_id, role_id in expired:
+                        try:
+                            if guild is not None:
+                                member = guild.get_member(user_id)
+                                if member is None:
                                     try:
-                                        await member.remove_roles(role, reason="Rôle temporaire de boutique expiré")
-                                    except discord.Forbidden:
-                                        pass
-                    except Exception as e:
-                        logger.error(f"[check_temp_roles] Erreur pour user={user_id} role={role_id} : {e}")
-                    finally:
-                        await c.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
+                                        member = await guild.fetch_member(user_id)
+                                    except discord.NotFound:
+                                        member = None
 
-            await conn.commit()
+                                if member is not None:
+                                    role = guild.get_role(role_id)
+                                    if role is not None:
+                                        try:
+                                            await member.remove_roles(role, reason="Rôle temporaire de boutique expiré")
+                                        except discord.Forbidden:
+                                            logger.warning(
+                                                f"[check_temp_roles] Permissions insuffisantes pour retirer le "
+                                                f"rôle {role_id} à {user_id} : le rôle restera attribué en Discord "
+                                                "bien que la ligne de suivi soit supprimée."
+                                            )
+                        except Exception as e:
+                            logger.error(f"[check_temp_roles] Erreur pour user={user_id} role={role_id} : {e}")
+                        finally:
+                            await c.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
+
+                await conn.commit()
+        except Exception as e:
+            # Sans ce garde-fou, une erreur qui échappe au try/except par rôle
+            # ci-dessus (ex: la requête de liste elle-même, ou le commit) lèverait
+            # hors de check_temp_roles() : discord.ext.tasks arrête alors la boucle
+            # définitivement et silencieusement — plus aucun rôle temporaire ne
+            # serait jamais retiré jusqu'au redémarrage du bot.
+            logger.error(f"[check_temp_roles] Erreur inattendue, on réessaiera au prochain passage : {e}")
 
     @check_temp_roles.before_loop
     async def before_check_temp_roles(self):
@@ -238,6 +256,13 @@ class BoutiqueCog(commands.Cog):
 
     @app_commands.command(name="boutique", description="Regarde la boutique")
     async def boutique(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Cette commande n'est pas disponible en MP. Utilise-la directement sur le serveur !",
+                ephemeral=True
+            )
+            return
+
         await interaction.response.defer()
 
         embed = discord.Embed(
