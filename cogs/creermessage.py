@@ -8,6 +8,43 @@ from cogs.recrutement import ConditionsSelect
 from cogs.trade import TradePanelView
 
 
+class MessagePersonnaliseModal(discord.ui.Modal, title="Message personnalisé"):
+    titre = discord.ui.TextInput(label="Titre", required=True, max_length=256)
+    texte = discord.ui.TextInput(
+        label="Texte du message", style=discord.TextStyle.paragraph, required=True, max_length=4000
+    )
+    couleur = discord.ui.TextInput(
+        label="Couleur en hexadécimal (optionnel)", required=False, max_length=7, placeholder="#5865F2"
+    )
+    image = discord.ui.TextInput(
+        label="URL d'une image (optionnel)", required=False, max_length=300, placeholder="https://..."
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        couleur_embed = discord.Color.blue()
+        if self.couleur.value:
+            try:
+                couleur_embed = discord.Color(int(self.couleur.value.strip().lstrip("#"), 16))
+            except ValueError:
+                await interaction.response.send_message(
+                    "❌ Couleur invalide : utilise un code hexadécimal, par exemple `#5865F2`.",
+                    ephemeral=True
+                )
+                return
+
+        embed = discord.Embed(title=self.titre.value, description=self.texte.value, color=couleur_embed)
+        if self.image.value:
+            embed.set_image(url=self.image.value.strip())
+
+        try:
+            await interaction.channel.send(embed=embed)
+        except discord.HTTPException as e:
+            await interaction.response.send_message(f"❌ Impossible d'envoyer le message : {e}", ephemeral=True)
+            return
+
+        await interaction.response.send_message("✅ Message envoyé dans ce salon !", ephemeral=True)
+
+
 class CreerMessageCog(commands.Cog):
     """Regroupe les messages préconçus (ticket, recrutement, trade...) sous une
     seule commande /creer-message, plutôt qu'une commande dédiée par message
@@ -18,13 +55,14 @@ class CreerMessageCog(commands.Cog):
 
     @app_commands.command(
         name="creer-message",
-        description="Poste un message préconçu (ticket, recrutement, trade...) dans ce salon"
+        description="Poste un message préconçu, ou personnalisé, dans ce salon"
     )
     @app_commands.describe(message="Quel message veux-tu poster ?")
     @app_commands.choices(message=[
         app_commands.Choice(name="Ticket", value="ticket"),
         app_commands.Choice(name="Recrutement", value="recrutement"),
         app_commands.Choice(name="Trade-brainrot", value="trade"),
+        app_commands.Choice(name="Personnalisé", value="personnalise"),
     ])
     @app_commands.checks.has_permissions(administrator=True)
     async def creer_message(self, interaction: discord.Interaction, message: app_commands.Choice[str]):
@@ -33,6 +71,14 @@ class CreerMessageCog(commands.Cog):
                 "❌ Cette commande n'est pas disponible en MP. Utilise-la directement sur le serveur !",
                 ephemeral=True
             )
+            return
+
+        # Un message personnalisé demande du texte libre (titre, texte...) : on
+        # passe par un Modal, qui doit être la toute première réponse à
+        # l'interaction (impossible après un defer(), contrairement aux autres
+        # choix ci-dessous qui n'ont besoin d'aucune saisie).
+        if message.value == "personnalise":
+            await interaction.response.send_modal(MessagePersonnaliseModal())
             return
 
         await interaction.response.defer(ephemeral=True)
