@@ -305,6 +305,49 @@ class BoutiqueCog(commands.Cog):
 
         await interaction.followup.send(embed=embed, view=self.BoutiqueView(items))
 
+    @app_commands.command(name="inventaire", description="Affiche les objets que tu as achetés en boutique")
+    async def inventaire(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+
+        embed = discord.Embed(title="🎒 Inventaire", color=discord.Color.green())
+
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    # `inventaire.item_id` correspond à `shop.valeur` pour les objets de
+                    # type 2 (voir AchatSelect.callback ci-dessus) : shop.name n'est pas
+                    # stocké dans inventaire pour ne pas dupliquer une donnée qui peut
+                    # changer (renommage) ou disparaître (objet retiré de la boutique)
+                    # après l'achat. LEFT JOIN pour rester tolérant à ce second cas.
+                    await cursor.execute(
+                        "SELECT i.item_id, i.quantite, s.name FROM inventaire i "
+                        "LEFT JOIN shop s ON s.type = 2 AND s.valeur = i.item_id "
+                        "WHERE i.user_id = %s AND i.quantite > 0 "
+                        "ORDER BY i.item_id",
+                        (interaction.user.id,)
+                    )
+                    rows = await cursor.fetchall()
+        except aiomysql.Error as e:
+            logger.critical(f"[inventaire] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+            return
+
+        if not rows:
+            embed.description = "Ton inventaire est vide."
+        else:
+            lignes = [
+                f"**{name or f'Objet #{item_id} (retiré de la boutique)'}** — x{quantite}"
+                for item_id, quantite, name in rows
+            ]
+            embed.description = "\n".join(lignes)
+
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed)
+        else:
+            await interaction.response.send_message(embed=embed)
+
 
 async def setup(bot):
     await bot.add_cog(BoutiqueCog(bot))
