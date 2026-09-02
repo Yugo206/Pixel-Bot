@@ -4,11 +4,11 @@ from discord import app_commands
 import aiomysql
 import logging
 import time
-import os
 from dotenv import load_dotenv
 load_dotenv()
 from utils.database import get_pool
 from utils import cache
+from utils.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,7 @@ class BoutiqueCog(commands.Cog):
                 if not expired:
                     return
 
-                guild_id = os.getenv("GUILD_ID")
+                guild_id = get_config("GUILD_ID")
                 guild = None
                 if guild_id:
                     guild = self.bot.get_guild(int(guild_id))

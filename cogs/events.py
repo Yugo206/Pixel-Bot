@@ -3,7 +3,6 @@ import time
 from discord.ext import commands
 import aiomysql
 import random
-import os
 import discord
 from cogs.tickets import TicketCreateView, FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView, ConfirmationClotureView
 from cogs.trade import TradeView, TradePanelView
@@ -14,6 +13,7 @@ load_dotenv()
 
 from utils.database import get_pool
 from utils import cache
+from utils.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -91,7 +91,7 @@ class Events(commands.Cog):
                 await conn.commit()
             cache.invalidate_xp(member.id)
         except aiomysql.Error as e:
-            channel_id = os.getenv("CHANNEL_COMMANDE_ID")
+            channel_id = get_config("CHANNEL_COMMANDE_ID")
             if not channel_id:
                 logger.critical(f"Erreur de base de donnée quand {member.id} a quitté le serveur : {e}", exc_info=True)
                 return
@@ -171,7 +171,7 @@ class Events(commands.Cog):
                 cache.invalidate_xp(message.author.id)
 
             if level_apres > level_avant:
-                channel_id = os.getenv("CHANNEL_COMMANDE_ID")
+                channel_id = get_config("CHANNEL_COMMANDE_ID")
                 channel = message.guild.get_channel(int(channel_id)) if channel_id else None
                 if channel:
                     try:

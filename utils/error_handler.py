@@ -1,16 +1,12 @@
 import asyncio
 import logging
-import os
 import time
 from datetime import datetime, timezone
 
 import discord
 
 from utils.database import get_pool
-
-# Anti-spam : au plus un MP par (module, niveau) toutes les X secondes, pour éviter
-# de se faire flood si une erreur se répète en boucle (ex: ticket_watcher toutes les 2 min).
-DM_COOLDOWN = int(os.getenv("DM_ERROR_COOLDOWN", "300"))
+from utils.config import get_config
 
 
 class DiscordErrorHandler(logging.Handler):
@@ -38,7 +34,12 @@ class DiscordErrorHandler(logging.Handler):
         try:
             key = (record.name, record.levelno)
             now = time.monotonic()
-            if now - self._last_sent.get(key, 0) >= DM_COOLDOWN:
+            # Lu à chaque appel (et non au chargement du module comme avant) : ce
+            # fichier est importé dans start.py avant create_pool()/load_config(),
+            # donc get_config() ne serait pas encore renseigné si on le lisait ici
+            # au niveau module.
+            dm_cooldown = int(get_config("DM_ERROR_COOLDOWN", "300"))
+            if now - self._last_sent.get(key, 0) >= dm_cooldown:
                 self._last_sent[key] = now
                 await self._notify_owner(record)
 

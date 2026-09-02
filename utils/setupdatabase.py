@@ -1,3 +1,5 @@
+import logging
+import os
 import warnings
 
 import aiomysql
@@ -5,6 +7,8 @@ import pymysql
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 TABLES = {
     "utilisateurs": [
@@ -137,7 +141,31 @@ TABLES = {
         "message TEXT NOT NULL",
         "traceback TEXT",
     ],
+
+    "config": [
+        # Réglages autrefois en .env (IDs de rôles/salons, cooldowns, montants —
+        # voir ENV_CONFIG_KEYS et _migrate_env_to_config ci-dessous), maintenant
+        # éditables directement en base (même principe que la table `shop`, sans
+        # commande dédiée). VARCHAR/VARCHAR comme `profil_extra` : ce ne sont que
+        # des paires clé/valeur en texte, jamais interprétées en SQL.
+        "cle VARCHAR(64) PRIMARY KEY",
+        "valeur VARCHAR(255)",
+    ],
 }
+
+# Clés .env historiquement optionnelles (IDs de rôles/salons, cooldowns, montants)
+# déplacées en base par _migrate_env_to_config pour ne garder dans .env que le
+# strict nécessaire au démarrage (secrets + connexion DB, voir README). Les vraies
+# variables de bootstrap (DISCORD_TOKEN, DB_*, LOG_LEVEL) ne sont volontairement
+# pas dans cette liste : elles doivent exister avant même que le pool ne soit créé.
+ENV_CONFIG_KEYS = [
+    "GUILD_ID", "OWNER_ID",
+    "CHANNEL_COMMANDE_ID", "CHANNEL_MODO_ID", "CHANNEL_TRADE_ID",
+    "ROLE_MODO_ID", "ROLE_RECRUTEMENT",
+    "ROLE_PC", "ROLE_XBOX", "ROLE_PLAYSTATION", "ROLE_NINTENDO", "ROLE_FORTNITE",
+    "ROLE_MINECRAFT", "ROLE_BRAWLSTARS", "ROLE_GTA", "ROLE_ROBLOX",
+    "DM_ERROR_COOLDOWN", "DAILY_REWARD", "DAILY_COOLDOWN",
+]
 
 
 async def init_db(pool: aiomysql.Pool):
@@ -180,6 +208,10 @@ async def init_db(pool: aiomysql.Pool):
 
             # 6️⃣ Contrainte UNIQUE sur role_special.user_id (voir _migrate_role_special_user_unique).
             await _migrate_role_special_user_unique(c)
+
+            # 7️⃣ Copie ponctuelle des variables .env optionnelles vers `config`
+            # (voir _migrate_env_to_config).
+            await _migrate_env_to_config(c)
 
         await conn.commit()
 
@@ -256,3 +288,47 @@ async def _migrate_role_special_user_unique(c):
         ON t1.user_id = t2.user_id AND t1.id < t2.id
     """)
     await c.execute("ALTER TABLE role_special ADD CONSTRAINT user_id_unique UNIQUE (user_id)")
+
+
+async def _migrate_env_to_config(c):
+    """Copie dans `config` les clés de ENV_CONFIG_KEYS définies dans l'environnement
+    et pas encore en base.
+
+    Idempotente et sans écrasement : une clé déjà présente dans `config` — qu'elle
+    y ait été copiée lors d'un démarrage précédent, ou insérée/modifiée à la main
+    par un admin (voir README, `config` est géré directement en base, sans commande
+    dédiée) — n'est jamais réécrite depuis .env. Une fois toutes les clés migrées,
+    cette fonction se réduit à un simple SELECT à chaque démarrage : elle
+    "s'éteint" d'elle-même sans qu'il soit nécessaire de la supprimer du code."""
+    await c.execute("SELECT cle FROM config")
+    deja_en_base = {row[0] for row in await c.fetchall()}
+
+    a_migrer = [
+        (cle, valeur)
+        for cle in ENV_CONFIG_KEYS
+        if cle not in deja_en_base and (valeur := os.getenv(cle))
+    ]
+    if not a_migrer:
+        return
+
+    await c.executemany("INSERT INTO config (cle, valeur) VALUES (%s, %s)", a_migrer)
+
+    # Vérification d'intégrité : on relit ce qu'on vient d'écrire avant de
+    # considérer la migration réussie, plutôt que de supposer que l'INSERT a
+    # forcément fonctionné pour chaque ligne.
+    await c.execute("SELECT cle FROM config")
+    desormais_en_base = {row[0] for row in await c.fetchall()}
+    manquantes = [cle for cle, _ in a_migrer if cle not in desormais_en_base]
+
+    if manquantes:
+        logger.critical(
+            "[migration config] Échec de la copie .env -> base pour : %s. "
+            "Ces réglages seront absents de `config` (donc traités comme non "
+            "configurés) tant que ce n'est pas corrigé manuellement en base.",
+            ", ".join(manquantes),
+        )
+    else:
+        logger.info(
+            "[migration config] %d variable(s) .env copiée(s) vers la table config : %s.",
+            len(a_migrer), ", ".join(cle for cle, _ in a_migrer),
+        )

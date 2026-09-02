@@ -3,7 +3,6 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import aiomysql
 import logging
-import os
 import re
 from datetime import datetime, timezone
 import time
@@ -11,6 +10,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from utils.database import get_pool, increment_warn, decrement_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
+from utils.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +293,7 @@ class Warn(commands.Cog):
             if not bans:
                 return
 
-            guild_id = os.getenv("GUILD_ID")
+            guild_id = get_config("GUILD_ID")
             if not guild_id:
                 return
             guild = self.bot.get_guild(int(guild_id))

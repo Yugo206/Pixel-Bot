@@ -22,15 +22,12 @@ logger = logging.getLogger(__name__)
 from utils.database import create_pool, close_pool, get_pool
 from utils.error_handler import DiscordErrorHandler
 from utils.setupdatabase import init_db
+from utils.config import load_config, get_config
 from cogs.tickets import demander_confirmation_moderateur
 
 Token = os.getenv("DISCORD_TOKEN")
 if not Token:
     raise RuntimeError("DISCORD_TOKEN non défini")
-
-# Pour les alertes d'erreur en MP (voir utils/error_handler.py). Optionnel :
-# sans OWNER_ID, le bot tourne normalement mais sans alerte proactive.
-OWNER_ID = os.getenv("OWNER_ID")
 
 intents = discord.Intents.none()
 intents.guilds = True  # cœur : accès aux serveurs, salons, threads
@@ -191,8 +188,8 @@ async def staff_test_watcher():
     now = int(time.time())
     pool = get_pool()
 
-    guild_id = os.getenv("GUILD_ID")
-    channel_id = os.getenv("CHANNEL_MODO_ID")
+    guild_id = get_config("GUILD_ID")
+    channel_id = get_config("CHANNEL_MODO_ID")
 
     async with pool.acquire() as conn:
         async with conn.cursor() as cur:
@@ -310,11 +307,6 @@ async def main():
     # (plusieurs cogs font des requêtes dès leur mise en place).
     pool = await create_pool()
 
-    if OWNER_ID:
-        logging.getLogger().addHandler(DiscordErrorHandler(bot, int(OWNER_ID)))
-    else:
-        logger.warning("OWNER_ID non défini : les alertes d'erreur par MP sont désactivées.")
-
     # Arrêt propre sur SIGTERM (systemd, pm2, docker stop, redéploiement...)
     # et SIGINT (Ctrl+C) : ferme proprement la connexion Discord, ce qui
     # laisse le `finally` ci-dessous fermer aussi le pool MariaDB au lieu de
@@ -330,6 +322,18 @@ async def main():
 
     try:
         await init_db(pool)  # ✅ Crée la DB et toutes les tables avant les cogs
+        await load_config(pool)  # ✅ Charge la table `config` avant les cogs (voir utils/config.py)
+
+        # OWNER_ID vient maintenant de la table `config` (voir _migrate_env_to_config
+        # dans utils/setupdatabase.py) : il ne peut donc être lu qu'une fois init_db()
+        # + load_config() passés, contrairement à avant où l'alerte MP pouvait couvrir
+        # tout main(). Les erreurs survenant avant ce point (création du pool,
+        # migration du schéma) ne sont donc plus notifiées par MP, seulement loguées.
+        owner_id = get_config("OWNER_ID")
+        if owner_id:
+            logging.getLogger().addHandler(DiscordErrorHandler(bot, int(owner_id)))
+        else:
+            logger.warning("OWNER_ID non défini (table config) : les alertes d'erreur par MP sont désactivées.")
 
         async with bot:
             for cog in COGS:

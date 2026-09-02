@@ -1,10 +1,10 @@
-import os
 import time
 from datetime import timedelta
 
 import discord
 
 from utils.database import get_pool
+from utils.config import get_config
 
 # Palier d'avertissements -> sanction appliquée.
 SANCTION_THRESHOLDS = {
@@ -16,7 +16,7 @@ SANCTION_THRESHOLDS = {
 
 async def get_modo_channel(bot, guild=None):
     """Récupère le salon de modération (CHANNEL_MODO_ID), en repassant par l'API si besoin."""
-    raw_id = os.getenv("CHANNEL_MODO_ID")
+    raw_id = get_config("CHANNEL_MODO_ID")
     if not raw_id:
         return None
     channel_id = int(raw_id)

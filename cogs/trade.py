@@ -1,5 +1,4 @@
 # cogs/trade.py
-import os
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -7,6 +6,7 @@ load_dotenv()
 import discord
 from discord.ext import commands
 from discord import app_commands
+from utils.config import get_config
 
 
 class TradeView(discord.ui.View):
@@ -52,7 +52,7 @@ async def envoyer_annonce_trade(interaction: discord.Interaction, brainrot: str,
         )
         return
 
-    channel_id = os.getenv("CHANNEL_TRADE_ID")
+    channel_id = get_config("CHANNEL_TRADE_ID")
     channel = interaction.guild.get_channel(int(channel_id)) if channel_id else None
     if channel is None and channel_id:
         try:
