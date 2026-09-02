@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 import discord
 import aiomysql
 from discord.ext import commands
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 # SQL (même principe que ajouter_rarete dans utils/database.py), même si les choix sont
 # déjà imposés côté client par app_commands.choices.
 COLONNES_CLASSEMENT = {"argent", "xp"}
+
+# Récompense et délai de /daily, configurables via .env comme le reste du bot
+# (voir DM_ERROR_COOLDOWN dans utils/error_handler.py pour le même principe).
+DAILY_REWARD = int(os.getenv("DAILY_REWARD", "50"))
+DAILY_COOLDOWN = int(os.getenv("DAILY_COOLDOWN", str(24 * 3600)))
 
 # Jeux/plateformes détectables via rôle pour le bouton "Personnaliser mon profil"
 # (voir PersonnaliserButton). Chaque entrée : le rôle qui déclenche la proposition
@@ -306,6 +312,63 @@ class Profile(commands.Cog):
             await interaction.followup.send(embed=embed)
         else:
             await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="daily", description="Récupère ta récompense quotidienne")
+    async def daily(self, interaction: discord.Interaction):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
+        now = int(time.time())
+        pool = get_pool()
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    # Garantit d'abord l'existence de la ligne (un membre n'ayant
+                    # jamais gagné d'XP/argent n'en a pas encore — même principe que
+                    # ajouter_rarete dans utils/database.py), sans toucher à argent ni
+                    # last_daily si elle existe déjà : INSERT IGNORE ne fait rien dans
+                    # ce cas.
+                    await cursor.execute("INSERT IGNORE INTO utilisateurs (user_id) VALUES (%s)", (interaction.user.id,))
+
+                    # UPDATE conditionné par le cooldown, comme la déduction d'achat en
+                    # boutique ou le flag warn_12h de ticket_watcher (start.py) — pas un
+                    # upsert avec condition dans le SET : le pool est ouvert avec
+                    # client_flag=CLIENT.FOUND_ROWS (voir utils/database.py), qui rend
+                    # rowcount ambigu entre "ligne insérée" et "clé dupliquée mais
+                    # valeurs inchangées" pour un INSERT ... ON DUPLICATE KEY UPDATE.
+                    # Ici la clause WHERE porte directement la condition de succès, donc
+                    # rowcount reste fiable : elle ne matche que si le cooldown est
+                    # écoulé, auquel cas last_daily change forcément de valeur.
+                    await cursor.execute(
+                        "UPDATE utilisateurs SET argent = argent + %s, last_daily = %s "
+                        "WHERE user_id = %s AND (last_daily IS NULL OR last_daily <= %s)",
+                        (DAILY_REWARD, now, interaction.user.id, now - DAILY_COOLDOWN)
+                    )
+                    gagne = cursor.rowcount == 1
+
+                    if not gagne:
+                        await cursor.execute("SELECT last_daily FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
+                        (last_daily,) = await cursor.fetchone()
+
+                    await conn.commit()
+        except aiomysql.Error as e:
+            logger.critical(f"[daily] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+            return
+
+        if gagne:
+            await interaction.followup.send(
+                f"✅ Tu as reçu ta récompense quotidienne : **{DAILY_REWARD} €** !",
+                ephemeral=True
+            )
+        else:
+            restant = last_daily + DAILY_COOLDOWN - now
+            heures, reste = divmod(max(restant, 0), 3600)
+            minutes = reste // 60
+            await interaction.followup.send(
+                f"❌ Tu as déjà réclamé ta récompense aujourd'hui. Reviens dans **{heures}h{minutes:02d}**.",
+                ephemeral=True
+            )
 
 async def setup(bot):
     await bot.add_cog(Profile(bot))
