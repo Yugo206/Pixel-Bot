@@ -398,6 +398,84 @@ class Warn(commands.Cog):
         except discord.Forbidden:
             pass
 
+    @app_commands.command(name="warns", description="Affiche l'historique des avertissements d'un membre")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def warns(self, interaction: discord.Interaction, user: discord.Member):
+        await interaction.response.defer(ephemeral=True)
+
+        pool = get_pool()
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    # LIMIT 25 : correspond à la limite Discord de 25 champs par embed
+                    # (voir la boucle add_field ci-dessous), pas une limite arbitraire.
+                    await c.execute(
+                        "SELECT id, modo_id, raison, created_at FROM warns "
+                        "WHERE user_id = %s ORDER BY created_at DESC LIMIT 25",
+                        (user.id,)
+                    )
+                    rows = await c.fetchall()
+        except aiomysql.Error as e:
+            logger.critical(f"[warns] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+            return
+
+        embed = discord.Embed(title=f"📋 Avertissements de {user.display_name}", color=discord.Color.orange())
+        if not rows:
+            embed.description = "Aucun avertissement."
+        else:
+            for warn_id, modo_id, raison, created_at in rows:
+                embed.add_field(
+                    name=f"#{warn_id} — <t:{created_at}:d>",
+                    value=f"Par <@{modo_id}>\n{raison or 'Pas de raison précisée'}",
+                    inline=False
+                )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="unwarn", description="Retire un avertissement précis (voir son id via /warns)")
+    @app_commands.describe(warn_id="Identifiant de l'avertissement à retirer (visible via /warns)")
+    @app_commands.checks.has_permissions(manage_messages=True)
+    async def unwarn(self, interaction: discord.Interaction, warn_id: int):
+        await interaction.response.defer(ephemeral=True)
+
+        pool = get_pool()
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as c:
+                    await c.execute("SELECT user_id FROM warns WHERE id = %s", (warn_id,))
+                    row = await c.fetchone()
+
+                if row is None:
+                    await interaction.followup.send("❌ Avertissement introuvable.", ephemeral=True)
+                    return
+
+                (user_id,) = row
+
+                async with conn.cursor() as c:
+                    # Réclame le warn de façon atomique avant de décrémenter le
+                    # compteur (même principe que
+                    # RefuseroracceptercontestationView.accepter plus haut) : si
+                    # /unwarn est lancé deux fois sur le même id en même temps, un
+                    # seul des deux DELETE obtient rowcount == 1 et décrémente
+                    # réellement le compteur.
+                    await c.execute("DELETE FROM warns WHERE id = %s", (warn_id,))
+                    gagne = c.rowcount == 1
+
+                if gagne:
+                    await decrement_warn(conn, user_id)
+
+                await conn.commit()
+        except aiomysql.Error as e:
+            logger.critical(f"[unwarn] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+            return
+
+        if not gagne:
+            await interaction.followup.send("❌ Cet avertissement a déjà été retiré entre-temps.", ephemeral=True)
+            return
+
+        await interaction.followup.send(f"✅ Avertissement #{warn_id} retiré (membre : <@{user_id}>).", ephemeral=True)
+
 
 async def setup(bot):
     await bot.add_cog(Warn(bot))
