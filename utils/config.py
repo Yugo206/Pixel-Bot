@@ -11,6 +11,8 @@ cog (à l'import), là où une requête DB ne le serait pas.
 """
 import logging
 
+from utils.setupdatabase import ENV_CONFIG_KEYS
+
 logger = logging.getLogger(__name__)
 
 _config: dict[str, str] = {}
@@ -31,3 +33,11 @@ def get_config(cle: str, default=None):
     """Équivalent de os.getenv(cle, default), mais lit le cache chargé par
     load_config() au lieu de l'environnement."""
     return _config.get(cle, default)
+
+
+def missing_keys() -> list[str]:
+    """Clés de ENV_CONFIG_KEYS absentes du cache chargé par load_config() —
+    donc ni en base `config`, ni en .env au démarrage (sinon la migration les
+    aurait déjà copiées dans `config`, voir _migrate_env_to_config dans
+    utils/setupdatabase.py). À appeler après load_config()."""
+    return [cle for cle in ENV_CONFIG_KEYS if cle not in _config]

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 from utils.database import create_pool, close_pool, get_pool
 from utils.error_handler import DiscordErrorHandler
 from utils.setupdatabase import init_db
-from utils.config import load_config, get_config
+from utils.config import load_config, get_config, missing_keys
 from cogs.tickets import demander_confirmation_moderateur
 
 Token = os.getenv("DISCORD_TOKEN")
@@ -334,6 +334,20 @@ async def main():
             logging.getLogger().addHandler(DiscordErrorHandler(bot, int(owner_id)))
         else:
             logger.warning("OWNER_ID non défini (table config) : les alertes d'erreur par MP sont désactivées.")
+
+        # Après le handler ci-dessus (pas avant) : sinon cette alerte ne passerait
+        # que dans les logs, sans jamais atteindre le MP qu'elle est censée
+        # déclencher. Loggé en ERROR (et non WARNING) uniquement pour emprunter
+        # ce système d'alerte MP — ce n'est pas une erreur au sens propre, juste
+        # un réglage resté absent de `config` ET de .env (sinon la migration
+        # l'aurait copié, voir _migrate_env_to_config dans utils/setupdatabase.py).
+        cles_manquantes = missing_keys()
+        if cles_manquantes:
+            logger.error(
+                "Réglage(s) jamais configuré(s) (absents de `config` et de .env) : %s. "
+                "Voir le README (section \"Réglages en base\") pour les ajouter.",
+                ", ".join(cles_manquantes),
+            )
 
         async with bot:
             for cog in COGS:
