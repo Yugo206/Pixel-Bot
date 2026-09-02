@@ -244,6 +244,64 @@ class Profile(commands.Cog):
         else:
             await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(name="donner", description="Donne de l'argent à un autre membre")
+    @app_commands.describe(user="Le membre à qui donner", montant="Combien d'argent donner")
+    async def donner(self, interaction: discord.Interaction, user: discord.Member, montant: app_commands.Range[int, 1]):
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+
+        if user.id == interaction.user.id:
+            await interaction.followup.send("❌ Tu ne peux pas te donner de l'argent à toi-même.", ephemeral=True)
+            return
+        if user.bot:
+            await interaction.followup.send("❌ Impossible de donner de l'argent à un bot.", ephemeral=True)
+            return
+
+        pool = get_pool()
+        try:
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    # Déduction atomique et conditionnelle (même principe que l'achat en
+                    # boutique, voir AchatSelect.callback dans cogs/boutique.py) : n'a
+                    # d'effet que si le solde de l'expéditeur est suffisant, ce qui évite
+                    # un double envoi en cas de double clic/appel rapide de la commande.
+                    await cursor.execute(
+                        "UPDATE utilisateurs SET argent = argent - %s WHERE user_id = %s AND argent >= %s",
+                        (montant, interaction.user.id, montant)
+                    )
+
+                    if cursor.rowcount == 0:
+                        await conn.rollback()
+                        await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
+                        row = await cursor.fetchone()
+                        solde = row[0] if row and row[0] is not None else 0
+                        await interaction.followup.send(
+                            f"❌ Tu n'as pas assez d'argent.\n💸 Ton solde : {solde} €",
+                            ephemeral=True
+                        )
+                        return
+
+                    # Le destinataire peut n'avoir aucune ligne dans `utilisateurs`
+                    # (jamais gagné d'XP/argent avant) : upsert plutôt qu'un simple
+                    # UPDATE, sinon le don serait débité chez l'expéditeur sans jamais
+                    # être crédité chez le destinataire.
+                    await cursor.execute(
+                        "INSERT INTO utilisateurs (user_id, argent) VALUES (%s, %s) "
+                        "ON DUPLICATE KEY UPDATE argent = COALESCE(argent, 0) + %s",
+                        (user.id, montant, montant)
+                    )
+                    await conn.commit()
+        except aiomysql.Error as e:
+            logger.critical(f"[donner] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+            return
+
+        await interaction.followup.send(f"✅ Tu as donné **{montant} €** à {user.mention}.", ephemeral=True)
+        try:
+            await user.send(f"💸 {interaction.user.mention} t'a donné **{montant} €** sur Pixel Party !")
+        except discord.Forbidden:
+            pass
+
     @app_commands.command(name="niveau", description="Afficher ton niveau et ton XP")
     async def niveau(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
