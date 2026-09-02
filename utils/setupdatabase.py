@@ -14,6 +14,9 @@ TABLES = {
         "niveau INT DEFAULT 0",
         "nb_tickets_open INT DEFAULT 0",
         "warn INT DEFAULT 0",
+        # Timestamp epoch du dernier /daily réclamé (voir cogs/profile.py) ; NULL =
+        # jamais réclamé.
+        "last_daily BIGINT",
         "commun INT DEFAULT 0",
         "rare INT DEFAULT 0",
         "epique INT DEFAULT 0",
