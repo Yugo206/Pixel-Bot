@@ -3,7 +3,6 @@ import logging
 import time
 import discord
 from discord.ext import commands
-import os
 import asyncio
 from dotenv import load_dotenv
 load_dotenv()
@@ -11,15 +10,18 @@ from datetime import datetime, timedelta, timezone
 from cogs.warn import ContestationView
 from utils.database import get_pool, increment_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
+from utils.config import get_config
 
 logger = logging.getLogger(__name__)
 
-# ID à contacter en cas d'erreur DB critique (avant : codé en dur dans le fichier).
-OWNER_ID = os.getenv("OWNER_ID")
-
 
 def _owner_mention() -> str:
-    return f"<@{OWNER_ID}>" if OWNER_ID else "un administrateur"
+    # Lu à chaque appel (et non mis en cache dans une constante de module) : ce
+    # fichier est importé directement par start.py (pour demander_confirmation_
+    # moderateur), donc avant load_config() dans main() — une lecture au niveau
+    # module figerait cette valeur à None pour toute la durée du process.
+    owner_id = get_config("OWNER_ID")
+    return f"<@{owner_id}>" if owner_id else "un administrateur"
 
 
 class AvisModal(discord.ui.Modal, title="Ton avis"):
@@ -461,7 +463,7 @@ class FermerView(discord.ui.View):
             # statut en DB) — sinon le bouton reste actif et échoue à chaque clic.
             membre = None
 
-        role_modo_id = os.getenv("ROLE_MODO_ID")
+        role_modo_id = get_config("ROLE_MODO_ID")
         role = discord.utils.get(interaction.user.roles, id=int(role_modo_id)) if role_modo_id else None
         if role:
             await interaction.followup.send("Comment s'est passé ton ticket ?", view=SatisfactionView(), ephemeral=True)

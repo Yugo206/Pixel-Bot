@@ -2,11 +2,11 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 import logging
-import os
 import aiomysql
 load_dotenv()
 from utils.database import get_pool
 from utils.sanctions import get_modo_channel
+from utils.config import get_config
 import time
 
 logger = logging.getLogger(__name__)
@@ -124,10 +124,10 @@ class Accepterview(discord.ui.View):
         except discord.Forbidden:
             pass
 
-        raw_role_id = os.getenv("ROLE_RECRUTEMENT")
+        raw_role_id = get_config("ROLE_RECRUTEMENT")
         if not raw_role_id:
             await interaction.followup.send(
-                "❌ Configuration manquante : la variable ROLE_RECRUTEMENT n'est pas définie, "
+                "❌ Configuration manquante : ROLE_RECRUTEMENT n'est pas défini dans la table `config`, "
                 "le rôle de test n'a pas pu être attribué."
             )
             return

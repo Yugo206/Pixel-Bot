@@ -1,4 +1,3 @@
-import os
 import logging
 import time
 import discord
@@ -11,6 +10,7 @@ load_dotenv()
 
 from utils.database import get_pool
 from utils import cache
+from utils.config import get_config
 
 logger = logging.getLogger(__name__)
 
@@ -19,15 +19,18 @@ logger = logging.getLogger(__name__)
 # déjà imposés côté client par app_commands.choices.
 COLONNES_CLASSEMENT = {"argent", "xp"}
 
-# Récompense et délai de /daily, configurables via .env comme le reste du bot
-# (voir DM_ERROR_COOLDOWN dans utils/error_handler.py pour le même principe).
-DAILY_REWARD = int(os.getenv("DAILY_REWARD", "50"))
-DAILY_COOLDOWN = int(os.getenv("DAILY_COOLDOWN", str(24 * 3600)))
+# Récompense et délai de /daily, configurables via la table `config` (voir
+# utils/config.py) comme le reste des réglages autrefois en .env. Lu au niveau
+# module : ce cog n'est jamais importé avant load_config() dans start.py
+# (contrairement à cogs/tickets.py, importé directement — voir _owner_mention).
+DAILY_REWARD = int(get_config("DAILY_REWARD", "50"))
+DAILY_COOLDOWN = int(get_config("DAILY_COOLDOWN", str(24 * 3600)))
 
 # Jeux/plateformes détectables via rôle pour le bouton "Personnaliser mon profil"
 # (voir PersonnaliserButton). Chaque entrée : le rôle qui déclenche la proposition
-# (variable d'env, optionnelle — absente = jeu désactivé sur ce serveur), et les
-# questions fixes posées dans le modal ((clé DB, libellé affiché), ...).
+# ("role_env" = clé de la table `config`, optionnelle — absente = jeu désactivé
+# sur ce serveur, voir utils/config.py), et les questions fixes posées dans le
+# modal ((clé DB, libellé affiché), ...).
 # iPhone/Android volontairement exclus : ce sont des rôles d'appareil, pas de jeu,
 # aucune question évidente à poser dessus.
 JEUX_PLATEFORMES = [
@@ -62,11 +65,11 @@ CLE_LABELS = {cle: label for jeu in JEUX_PLATEFORMES for cle, label in jeu["ques
 
 
 def _jeux_disponibles(member: discord.Member) -> list:
-    """Renvoie les jeux/plateformes de JEUX_PLATEFORMES configurés (variable d'env
-    définie) et dont `member` possède le rôle correspondant."""
+    """Renvoie les jeux/plateformes de JEUX_PLATEFORMES configurés (clé présente
+    dans la table `config`) et dont `member` possède le rôle correspondant."""
     disponibles = []
     for jeu in JEUX_PLATEFORMES:
-        role_id_raw = os.getenv(jeu["role_env"])
+        role_id_raw = get_config(jeu["role_env"])
         if not role_id_raw:
             continue
         role = member.guild.get_role(int(role_id_raw))

@@ -49,25 +49,6 @@ Dans le meme dossier que `start.py`, créer un nouveau fichier `.env` et y écri
 
 ```.env
 DISCORD_TOKEN=[votre token discord]
-CHANNEL_MODO_ID=[l'id de votre salon moderateur]
-ROLE_MODO_ID=[l'id de votre role moderateur]
-GUILD_ID=[l'id de votre serveur]
-CHANNEL_TRADE_ID=[l'id de votre salon de trade brainrot]
-CHANNEL_COMMANDE_ID=[l'id de votre salon de commande]
-CHANNEL_RECRUTEMENT=[l'identifiant du salon de recrutement]
-ROLE_RECRUTEMENT=[l'id du rôle donné aux modérateurs test acceptés]
-OWNER_ID=[votre id discord, prévenu en MP en cas d'erreur (voir "Alertes d'erreur" ci-dessous)]
-# Rôles jeu/plateforme détectés par le bouton "Personnaliser mon profil" (/profil) —
-# chacun optionnel : un rôle non renseigné ici désactive juste sa question associée.
-ROLE_PC=[l'id du rôle "joueur PC" (optionnel)]
-ROLE_XBOX=[l'id du rôle "joueur Xbox" (optionnel)]
-ROLE_PLAYSTATION=[l'id du rôle "joueur PlayStation" (optionnel)]
-ROLE_NINTENDO=[l'id du rôle "joueur Nintendo" (optionnel)]
-ROLE_FORTNITE=[l'id du rôle "joueur Fortnite" (optionnel)]
-ROLE_MINECRAFT=[l'id du rôle "joueur Minecraft" (optionnel)]
-ROLE_BRAWLSTARS=[l'id du rôle "joueur Brawl Stars" (optionnel)]
-ROLE_GTA=[l'id du rôle "joueur GTA" (optionnel)]
-ROLE_ROBLOX=[l'id du rôle "joueur Roblox" (optionnel)]
 DB_HOST=[l'adresse de votre serveur MariaDB, ex: 127.0.0.1]
 DB_PORT=[le port de votre serveur MariaDB, généralement 3306]
 DB_USER=[l'utilisateur MariaDB créé à l'étape précédente]
@@ -79,21 +60,71 @@ DB_POOL_RECYCLE=[durée en secondes avant recyclage des connexions inactives du 
 DB_POOL_MINSIZE=[nombre minimum de connexions gardées ouvertes dans le pool (optionnel, défaut 1)]
 DB_POOL_MAXSIZE=[nombre maximum de connexions simultanées dans le pool (optionnel, défaut 5)]
 LOG_LEVEL=[niveau de verbosité des logs : DEBUG/INFO/WARNING/ERROR (optionnel, défaut INFO)]
-DM_ERROR_COOLDOWN=[secondes minimum entre deux MP d'alerte pour la même erreur (optionnel, défaut 300)]
 ```
-*Astuce : Pensez a avoir activé le mode developpeur dans les parametres de discord pour obtenir les identifiants*
-
 *Astuce : `DB_SSL`, `DB_SSL_CA`, `DB_POOL_RECYCLE`, `DB_POOL_MINSIZE` et `DB_POOL_MAXSIZE` sont indépendants de
 l'hébergeur — que la base et le bot tournent sur la même machine (VPS) ou séparément (ex: base chez alwaysdata,
 bot ailleurs), il suffit d'ajuster ces variables sans toucher au code.*
 
+Ce `.env` ne contient plus que ce qui doit exister avant même la connexion à la base
+(le token et l'accès MariaDB) : tout le reste (IDs de rôles/salons, alertes d'erreur,
+récompenses...) est décrit dans la section suivante.
+
+### Réglages en base (table `config`)
+
+Les IDs de rôles/salons, `GUILD_ID`, `OWNER_ID`, `DM_ERROR_COOLDOWN` et les montants
+de `/daily` (`DAILY_REWARD`/`DAILY_COOLDOWN`) — tout ce qui n'a pas besoin d'exister
+avant la connexion à la base — sont stockés dans une table `config` (clé/valeur),
+créée automatiquement comme les autres tables. Comme `shop`, elle s'édite directement
+en base, sans commande dédiée ni redémarrage du bot pour la plupart des changements :
+
+```sql
+INSERT INTO config (cle, valeur) VALUES ('ROLE_PC', '123456789012345678')
+    ON DUPLICATE KEY UPDATE valeur = VALUES(valeur);
+```
+
+Toutes ces clés sont optionnelles : une clé absente désactive juste la fonctionnalité
+associée (ex: pas de `ROLE_ROBLOX` = le jeu Roblox n'apparaît pas dans "Personnaliser
+mon profil"). Les clés disponibles :
+
+| Clé | Rôle |
+|---|---|
+| `GUILD_ID` | ID de votre serveur (période de test staff, déban automatique) |
+| `OWNER_ID` | votre id discord, prévenu en MP en cas d'erreur (voir "Alertes d'erreur" ci-dessous) |
+| `CHANNEL_MODO_ID` | salon de modération |
+| `CHANNEL_TRADE_ID` | salon de trade brainrot |
+| `CHANNEL_COMMANDE_ID` | salon de commande (annonces de niveau, erreurs) |
+| `ROLE_MODO_ID` | rôle modérateur |
+| `ROLE_RECRUTEMENT` | rôle donné aux modérateurs test acceptés |
+| `ROLE_PC`, `ROLE_XBOX`, `ROLE_PLAYSTATION`, `ROLE_NINTENDO`, `ROLE_FORTNITE`, `ROLE_MINECRAFT`, `ROLE_BRAWLSTARS`, `ROLE_GTA`, `ROLE_ROBLOX` | rôles jeu/plateforme détectés par le bouton "Personnaliser mon profil" (/profil) |
+| `DM_ERROR_COOLDOWN` | secondes minimum entre deux MP d'alerte pour la même erreur (défaut 300) |
+| `DAILY_REWARD` | argent gagné avec `/daily` (défaut 50) |
+| `DAILY_COOLDOWN` | délai en secondes entre deux `/daily` (défaut 86400, soit 24h) |
+
+*Astuce : Pensez a avoir activé le mode developpeur dans les parametres de discord pour obtenir les identifiants.*
+
+**Première installation :** pour éviter du SQL manuel dès le départ, vous pouvez
+renseigner ces mêmes clés dans `.env` (voir `.env.example`) avant le tout premier
+lancement du bot : une migration automatique les copie une seule fois vers `config`
+au démarrage (voir `_migrate_env_to_config` dans `utils/setupdatabase.py`). Une fois
+cette copie faite, elles peuvent être retirées de `.env` sans effet — le bot ne les
+relit plus jamais depuis l'environnement, et les éditer ensuite ne se fait qu'en base.
+
+⚠️ La plupart de ces clés (rôles/salons, `DM_ERROR_COOLDOWN`) sont relues à chaque
+utilisation : une modification en base est prise en compte immédiatement, sans
+redémarrer le bot. Deux exceptions, lues une seule fois au démarrage : `DAILY_REWARD`/
+`DAILY_COOLDOWN`, et le destinataire des MP d'alerte (fixé au lancement à partir
+d'`OWNER_ID` — le changer en base met à jour son affichage ailleurs dans le bot, mais
+pas la destination des alertes déjà en cours). Un redémarrage est nécessaire pour ces
+trois clés.
+
 ### Alertes d'erreur
 
-Si `OWNER_ID` est défini, le bot envoie un MP au propriétaire dès qu'une erreur est loggée
-(`logger.error`/`logger.critical` — voir `utils/error_handler.py`), avec un anti-spam
-(`DM_ERROR_COOLDOWN`, un MP max par type d'erreur sur cette durée). Les erreurs `critical`
-(problèmes de base de données) sont en plus enregistrées dans la table `error` (créée
-automatiquement) pour investigation ultérieure, avec la trace complète si disponible.
+Si `OWNER_ID` est défini (en base, voir ci-dessus), le bot envoie un MP au propriétaire
+dès qu'une erreur est loggée (`logger.error`/`logger.critical` — voir
+`utils/error_handler.py`), avec un anti-spam (`DM_ERROR_COOLDOWN`, un MP max par type
+d'erreur sur cette durée). Les erreurs `critical` (problèmes de base de données) sont
+en plus enregistrées dans la table `error` (créée automatiquement) pour investigation
+ultérieure, avec la trace complète si disponible.
 
 ## 5) Terminé !
 
