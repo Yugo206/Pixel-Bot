@@ -126,6 +126,13 @@ d'erreur sur cette durée). Les erreurs `critical` (problèmes de base de donné
 en plus enregistrées dans la table `error` (créée automatiquement) pour investigation
 ultérieure, avec la trace complète si disponible.
 
+Ce même système sert aussi de garde-fou pour la configuration : à chaque démarrage,
+le bot vérifie que chaque clé du tableau ci-dessus est bien présente dans `config`
+(voir `missing_keys()` dans `utils/config.py`). Une clé jamais configurée (absente de
+`config` **et** de `.env` — sinon la migration l'aurait copiée) déclenche un MP listant
+tout ce qui manque, pour éviter qu'une fonctionnalité reste silencieusement désactivée
+sans que personne ne le remarque.
+
 ## 5) Terminé !
 
 *Astuce : Pensez a faire git pull sur la branche `main` pour obtenir les nouvelles fonctionnalités 
