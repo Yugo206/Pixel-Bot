@@ -11,6 +11,7 @@ load_dotenv()
 from utils.database import get_pool
 from utils import cache
 from utils.config import get_config
+from utils.profile_card import generate_profile_card
 
 logger = logging.getLogger(__name__)
 
@@ -190,37 +191,37 @@ class Profile(commands.Cog):
     async def profil(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        embed = discord.Embed(title="Profil", description="Ton profil contient ton **argent**, ton **XP** et ton **niveau**", color=discord.Color.green())
         pool = get_pool()
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                     result = await cursor.fetchone()
-                    await cursor.execute("SELECT cle, valeur FROM profil_extra WHERE user_id = %s", (interaction.user.id,))
-                    extra = await cursor.fetchall()
             argent = result[0] if result and result[0] is not None else 0
             # Via le cache mémoire (utils/cache.py), comme /niveau : sinon un nouveau
             # membre voit 0 XP ici puis une valeur différente (40, la valeur de
             # seed du cache) dès qu'il utilise /niveau, uniquement selon l'ordre
             # dans lequel il tape les deux commandes.
             xp = await cache.get_xp(pool, interaction.user.id)
+
+            # Rang XP : utilisateurs.xp est toujours à jour en base (bump_xp dans
+            # on_message, cogs/events.py, écrit en DB dans le même handler), donc
+            # une lecture directe ici est fiable sans passer par le cache.
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("SELECT COUNT(*) + 1 FROM utilisateurs WHERE xp > %s", (xp,))
+                    (rang,) = await cursor.fetchone()
         except aiomysql.Error as e:
             logger.critical(f"[profil] Erreur DB : {e}", exc_info=True)
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
-        embed.add_field(name="Argent :", value=f"{argent} €", inline=False)
-        embed.add_field(name="Expérience :", value=f"{xp}", inline=False)
-        nv = self.get_level(xp)
-        embed.add_field(name="Niveau :", value=f"{nv}", inline=False)
-        if extra:
-            texte = "\n".join(f"**{CLE_LABELS.get(cle, cle)}** : {valeur}" for cle, valeur in extra)
-            embed.add_field(name="🎮 Jeux & plateformes :", value=texte, inline=False)
+
+        fichier = await generate_profile_card(interaction.user, argent, xp, rang)
         view = PersonnaliserButton() if interaction.guild is not None else None
         if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, view=view)
+            await interaction.followup.send(file=fichier, view=view)
         else:
-            await interaction.response.send_message(embed=embed, view=view)
+            await interaction.response.send_message(file=fichier, view=view)
 
     @app_commands.command(name="argent", description="Afficher ton solde d'argent")
     async def argent(self, interaction: discord.Interaction):
