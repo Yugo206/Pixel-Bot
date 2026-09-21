@@ -725,6 +725,14 @@ class MentionPartenariatView(discord.ui.View):
         mention = select.values[0]
         channel = interaction.message.channel
 
+        # Sans ça, Discord garde la mention choisie affichée comme sélectionnée
+        # indéfiniment (voir TimedView dans utils/views.py pour le même souci sur
+        # les vues non persistantes) : ce select étant à usage unique (le choix
+        # déclenche la suite du flux partenariat), on le désactive plutôt que de
+        # le réinitialiser, pour éviter un second envoi de la pub du serveur.
+        select.disabled = True
+        await interaction.message.edit(view=self)
+
         description = pub = None
         try:
             pool = get_pool()
