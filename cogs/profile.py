@@ -11,6 +11,10 @@ load_dotenv()
 from utils.database import get_pool
 from utils import cache
 from utils.config import get_config
+from utils.profile_card import generate_profile_card
+from utils.transactions import log_transaction
+from utils.views import TimedView
+from cogs.boutique import build_boutique_display
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +82,67 @@ def _jeux_disponibles(member: discord.Member) -> list:
     return disponibles
 
 
+async def _effectuer_don(interaction: discord.Interaction, destinataire: discord.abc.User, montant: int) -> None:
+    """Logique de transfert d'argent, partagée entre /donner et le select "Actions"
+    attaché à /profil (voir MontantDonModal ci-dessous). Suppose que l'interaction
+    est déjà déférée en ephemeral — envoie elle-même la réponse finale (succès ou
+    erreur) via followup."""
+    if destinataire.id == interaction.user.id:
+        await interaction.followup.send("❌ Tu ne peux pas te donner de l'argent à toi-même.", ephemeral=True)
+        return
+    if destinataire.bot:
+        await interaction.followup.send("❌ Impossible de donner de l'argent à un bot.", ephemeral=True)
+        return
+
+    pool = get_pool()
+    try:
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                # Déduction atomique et conditionnelle (même principe que l'achat en
+                # boutique, voir AchatSelect.callback dans cogs/boutique.py) : n'a
+                # d'effet que si le solde de l'expéditeur est suffisant, ce qui évite
+                # un double envoi en cas de double clic/appel rapide.
+                await cursor.execute(
+                    "UPDATE utilisateurs SET argent = argent - %s WHERE user_id = %s AND argent >= %s",
+                    (montant, interaction.user.id, montant)
+                )
+
+                if cursor.rowcount == 0:
+                    await conn.rollback()
+                    await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
+                    row = await cursor.fetchone()
+                    solde = row[0] if row and row[0] is not None else 0
+                    await interaction.followup.send(
+                        f"❌ Tu n'as pas assez d'argent.\n💸 Ton solde : {solde} €",
+                        ephemeral=True
+                    )
+                    return
+
+                # Le destinataire peut n'avoir aucune ligne dans `utilisateurs`
+                # (jamais gagné d'XP/argent avant) : upsert plutôt qu'un simple
+                # UPDATE, sinon le don serait débité chez l'expéditeur sans jamais
+                # être crédité chez le destinataire.
+                await cursor.execute(
+                    "INSERT INTO utilisateurs (user_id, argent) VALUES (%s, %s) "
+                    "ON DUPLICATE KEY UPDATE argent = COALESCE(argent, 0) + %s",
+                    (destinataire.id, montant, montant)
+                )
+
+                await log_transaction(cursor, interaction.user.id, "don_envoye", -montant, f"Don à {destinataire}")
+                await log_transaction(cursor, destinataire.id, "don_recu", montant, f"Don de {interaction.user}")
+                await conn.commit()
+    except aiomysql.Error as e:
+        logger.critical(f"[donner] Erreur DB : {e}", exc_info=True)
+        await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+        return
+
+    await interaction.followup.send(f"✅ Tu as donné **{montant} €** à {destinataire.mention}.", ephemeral=True)
+    try:
+        await destinataire.send(f"💸 {interaction.user.mention} t'a donné **{montant} €** sur Pixel Party !")
+    except discord.Forbidden:
+        pass
+
+
 class JeuModal(discord.ui.Modal):
     def __init__(self, jeu: dict, valeurs_existantes: dict):
         super().__init__(title=f"Personnalisation — {jeu['label']}")
@@ -135,21 +200,129 @@ class JeuButton(discord.ui.Button):
         await interaction.response.send_modal(JeuModal(self.jeu, valeurs_existantes))
 
 
-class PersonnalisationView(discord.ui.View):
+class PersonnalisationView(TimedView):
     def __init__(self, jeux: list):
-        super().__init__(timeout=180)
+        super().__init__()
         for jeu in jeux:
             self.add_item(JeuButton(jeu))
 
 
-class PersonnaliserButton(discord.ui.View):
-    """Bouton attaché à /profil. Agit toujours sur qui clique (interaction.user), pas
-    sur le propriétaire du profil affiché — même principe que AchatSelect dans
-    cogs/boutique.py, partagé entre tous les viewers d'un même message public."""
-    def __init__(self):
-        super().__init__(timeout=180)
+class MontantDonModal(discord.ui.Modal, title="Donner de l'argent"):
+    montant = discord.ui.TextInput(label="Montant (€)", placeholder="Ex: 50", max_length=10)
 
-    @discord.ui.button(label="🎮 Personnaliser mon profil", style=discord.ButtonStyle.blurple)
+    def __init__(self, destinataire: discord.abc.User):
+        super().__init__()
+        self.destinataire = destinataire
+
+    async def on_submit(self, interaction: discord.Interaction):
+        valeur = self.montant.value.strip()
+        if not valeur.isdigit() or int(valeur) <= 0:
+            await interaction.response.send_message(
+                "❌ Montant invalide : indique un nombre entier positif.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        await _effectuer_don(interaction, self.destinataire, int(valeur))
+
+
+class DestinataireSelect(discord.ui.UserSelect):
+    def __init__(self):
+        super().__init__(placeholder="Choisis le membre à qui donner de l'argent", min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(MontantDonModal(self.values[0]))
+        # Réinitialise le select (voir TimedView) : sans ça, Discord garde le
+        # membre choisi affiché comme sélectionné et le même choix ne peut pas
+        # être refait (ex: modale annulée, on veut retenter avec le même membre).
+        await self.view.message.edit(view=self.view)
+
+
+class DestinataireView(TimedView):
+    def __init__(self):
+        super().__init__()
+        self.add_item(DestinataireSelect())
+
+
+class ProfilActionsSelect(discord.ui.Select):
+    """Select "Actions" attaché à /profil (historique, don). Agit toujours sur qui
+    clique (interaction.user), pas sur le propriétaire du profil affiché — même
+    principe que PersonnaliserButton/AchatSelect (cogs/boutique.py)."""
+    def __init__(self):
+        super().__init__(
+            placeholder="💰 Actions",
+            min_values=1,
+            max_values=1,
+            options=[
+                discord.SelectOption(label="Historique des transactions", value="historique", emoji="📜"),
+                discord.SelectOption(label="Donner de l'argent", value="donner", emoji="💸"),
+            ],
+            row=0,
+        )
+
+    async def callback(self, interaction: discord.Interaction):
+        if self.values[0] == "donner":
+            view = DestinataireView()
+            await interaction.response.send_message(
+                "Choisis à qui donner de l'argent :", view=view, ephemeral=True
+            )
+            view.message = await interaction.original_response()
+            # Réinitialise ce select sur la carte /profil (voir TimedView) : sans
+            # ça, Discord le garde affiché sur "Donner de l'argent" et le même
+            # choix ne peut pas être refait (ex: reconsulter l'historique juste
+            # après, ou redonner de l'argent une seconde fois).
+            await self.view.message.edit(view=self.view)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            pool = get_pool()
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cursor:
+                        # LIMIT 10 : voir table `transactions` (utils/setupdatabase.py) —
+                        # un pur journal, jamais relu pour recalculer un solde.
+                        await cursor.execute(
+                            "SELECT type, montant, detail, created_at FROM transactions "
+                            "WHERE user_id = %s ORDER BY created_at DESC, id DESC LIMIT 10",
+                            (interaction.user.id,)
+                        )
+                        rows = await cursor.fetchall()
+            except aiomysql.Error as e:
+                logger.critical(f"[profil_actions] Erreur DB : {e}", exc_info=True)
+                await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+                return
+
+            if not rows:
+                await interaction.followup.send("Aucune transaction pour l'instant.", ephemeral=True)
+                return
+
+            lignes = []
+            for _type, montant, detail, created_at in rows:
+                signe = "+" if montant > 0 else ""
+                lignes.append(f"<t:{created_at}:d> — **{signe}{montant} €** — {detail}")
+            embed = discord.Embed(
+                title="📜 Historique des transactions",
+                description="\n".join(lignes),
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        finally:
+            # Réinitialise le select (voir TimedView) quel que soit le chemin
+            # emprunté ci-dessus (succès, erreur DB, historique vide) : sinon
+            # reconsulter l'historique une seconde fois ne redéclenche rien.
+            await self.view.message.edit(view=self.view)
+
+
+class ProfilActionsView(TimedView):
+    """Boutons + select attachés à /profil : personnalisation, argent (historique/
+    don via ProfilActionsSelect) et accès rapide à la boutique. Agit toujours sur
+    qui clique (interaction.user), pas sur le propriétaire du profil affiché —
+    même principe que AchatSelect dans cogs/boutique.py."""
+    def __init__(self):
+        super().__init__()
+        self.add_item(ProfilActionsSelect())
+
+    @discord.ui.button(label="🎮 Personnaliser mon profil", style=discord.ButtonStyle.blurple, row=1)
     async def personnaliser(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None:
             await interaction.response.send_message(
@@ -166,11 +339,24 @@ class PersonnaliserButton(discord.ui.View):
             )
             return
 
+        view = PersonnalisationView(jeux)
         await interaction.response.send_message(
             "Choisis quel jeu/plateforme tu veux renseigner :",
-            view=PersonnalisationView(jeux),
+            view=view,
             ephemeral=True
         )
+        view.message = await interaction.original_response()
+
+    @discord.ui.button(label="🛒 Boutique", style=discord.ButtonStyle.green, row=1)
+    async def boutique(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.guild is None:
+            await interaction.response.send_message(
+                "❌ Cette fonctionnalité n'est disponible que sur le serveur.", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        embed, view = await build_boutique_display()
+        view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 class Profile(commands.Cog):
@@ -190,37 +376,40 @@ class Profile(commands.Cog):
     async def profil(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        embed = discord.Embed(title="Profil", description="Ton profil contient ton **argent**, ton **XP** et ton **niveau**", color=discord.Color.green())
         pool = get_pool()
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                     result = await cursor.fetchone()
-                    await cursor.execute("SELECT cle, valeur FROM profil_extra WHERE user_id = %s", (interaction.user.id,))
-                    extra = await cursor.fetchall()
             argent = result[0] if result and result[0] is not None else 0
             # Via le cache mémoire (utils/cache.py), comme /niveau : sinon un nouveau
             # membre voit 0 XP ici puis une valeur différente (40, la valeur de
             # seed du cache) dès qu'il utilise /niveau, uniquement selon l'ordre
             # dans lequel il tape les deux commandes.
             xp = await cache.get_xp(pool, interaction.user.id)
+
+            # Rang XP : utilisateurs.xp est toujours à jour en base (bump_xp dans
+            # on_message, cogs/events.py, écrit en DB dans le même handler), donc
+            # une lecture directe ici est fiable sans passer par le cache.
+            async with pool.acquire() as conn:
+                async with conn.cursor() as cursor:
+                    await cursor.execute("SELECT COUNT(*) + 1 FROM utilisateurs WHERE xp > %s", (xp,))
+                    (rang,) = await cursor.fetchone()
         except aiomysql.Error as e:
             logger.critical(f"[profil] Erreur DB : {e}", exc_info=True)
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
-        embed.add_field(name="Argent :", value=f"{argent} €", inline=False)
-        embed.add_field(name="Expérience :", value=f"{xp}", inline=False)
-        nv = self.get_level(xp)
-        embed.add_field(name="Niveau :", value=f"{nv}", inline=False)
-        if extra:
-            texte = "\n".join(f"**{CLE_LABELS.get(cle, cle)}** : {valeur}" for cle, valeur in extra)
-            embed.add_field(name="🎮 Jeux & plateformes :", value=texte, inline=False)
-        view = PersonnaliserButton() if interaction.guild is not None else None
+
+        fichier = await generate_profile_card(interaction.user, argent, xp, rang)
+        view = ProfilActionsView() if interaction.guild is not None else None
         if interaction.response.is_done():
-            await interaction.followup.send(embed=embed, view=view)
+            message = await interaction.followup.send(file=fichier, view=view)
         else:
-            await interaction.response.send_message(embed=embed, view=view)
+            await interaction.response.send_message(file=fichier, view=view)
+            message = await interaction.original_response()
+        if view is not None:
+            view.message = message
 
     @app_commands.command(name="argent", description="Afficher ton solde d'argent")
     async def argent(self, interaction: discord.Interaction):
@@ -252,58 +441,7 @@ class Profile(commands.Cog):
     async def donner(self, interaction: discord.Interaction, user: discord.Member, montant: app_commands.Range[int, 1]):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
-
-        if user.id == interaction.user.id:
-            await interaction.followup.send("❌ Tu ne peux pas te donner de l'argent à toi-même.", ephemeral=True)
-            return
-        if user.bot:
-            await interaction.followup.send("❌ Impossible de donner de l'argent à un bot.", ephemeral=True)
-            return
-
-        pool = get_pool()
-        try:
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
-                    # Déduction atomique et conditionnelle (même principe que l'achat en
-                    # boutique, voir AchatSelect.callback dans cogs/boutique.py) : n'a
-                    # d'effet que si le solde de l'expéditeur est suffisant, ce qui évite
-                    # un double envoi en cas de double clic/appel rapide de la commande.
-                    await cursor.execute(
-                        "UPDATE utilisateurs SET argent = argent - %s WHERE user_id = %s AND argent >= %s",
-                        (montant, interaction.user.id, montant)
-                    )
-
-                    if cursor.rowcount == 0:
-                        await conn.rollback()
-                        await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
-                        row = await cursor.fetchone()
-                        solde = row[0] if row and row[0] is not None else 0
-                        await interaction.followup.send(
-                            f"❌ Tu n'as pas assez d'argent.\n💸 Ton solde : {solde} €",
-                            ephemeral=True
-                        )
-                        return
-
-                    # Le destinataire peut n'avoir aucune ligne dans `utilisateurs`
-                    # (jamais gagné d'XP/argent avant) : upsert plutôt qu'un simple
-                    # UPDATE, sinon le don serait débité chez l'expéditeur sans jamais
-                    # être crédité chez le destinataire.
-                    await cursor.execute(
-                        "INSERT INTO utilisateurs (user_id, argent) VALUES (%s, %s) "
-                        "ON DUPLICATE KEY UPDATE argent = COALESCE(argent, 0) + %s",
-                        (user.id, montant, montant)
-                    )
-                    await conn.commit()
-        except aiomysql.Error as e:
-            logger.critical(f"[donner] Erreur DB : {e}", exc_info=True)
-            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
-            return
-
-        await interaction.followup.send(f"✅ Tu as donné **{montant} €** à {user.mention}.", ephemeral=True)
-        try:
-            await user.send(f"💸 {interaction.user.mention} t'a donné **{montant} €** sur Pixel Party !")
-        except discord.Forbidden:
-            pass
+        await _effectuer_don(interaction, user, montant)
 
     @app_commands.command(name="niveau", description="Afficher ton niveau et ton XP")
     async def niveau(self, interaction: discord.Interaction):
@@ -410,6 +548,8 @@ class Profile(commands.Cog):
                     if not gagne:
                         await cursor.execute("SELECT last_daily FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                         (last_daily,) = await cursor.fetchone()
+                    else:
+                        await log_transaction(cursor, interaction.user.id, "daily", DAILY_REWARD, "Récompense quotidienne")
 
                     await conn.commit()
         except aiomysql.Error as e:

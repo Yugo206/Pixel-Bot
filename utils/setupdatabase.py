@@ -151,6 +151,21 @@ TABLES = {
         "cle VARCHAR(64) PRIMARY KEY",
         "valeur VARCHAR(255)",
     ],
+
+    "transactions": [
+        # Historique des mouvements d'argent (achats boutique, dons envoyés/reçus,
+        # /daily) affiché via le select "Actions" attaché à /profil (voir
+        # utils/transactions.py et cogs/profile.py). Pur journal : jamais relu
+        # pour recalculer un solde, utilisateurs.argent reste la seule source de
+        # vérité — uniquement pour affichage. `montant` est signé (négatif pour
+        # une dépense) pour un affichage uniforme sans logique par `type`.
+        "id INT PRIMARY KEY AUTO_INCREMENT",
+        "user_id BIGINT NOT NULL",
+        "type VARCHAR(20) NOT NULL",
+        "montant INT NOT NULL",
+        "detail VARCHAR(255)",
+        "created_at BIGINT NOT NULL",
+    ],
 }
 
 # Clés .env historiquement optionnelles (IDs de rôles/salons, cooldowns, montants)
@@ -212,6 +227,11 @@ async def init_db(pool: aiomysql.Pool):
             # 7️⃣ Copie ponctuelle des variables .env optionnelles vers `config`
             # (voir _migrate_env_to_config).
             await _migrate_env_to_config(c)
+
+            # 8️⃣ Index (user_id, created_at) sur `transactions` (voir
+            # _migrate_transactions_index) : utilisé à chaque affichage de
+            # l'historique des 10 dernières transactions d'un membre.
+            await _migrate_transactions_index(c)
 
         await conn.commit()
 
@@ -288,6 +308,21 @@ async def _migrate_role_special_user_unique(c):
         ON t1.user_id = t2.user_id AND t1.id < t2.id
     """)
     await c.execute("ALTER TABLE role_special ADD CONSTRAINT user_id_unique UNIQUE (user_id)")
+
+
+async def _migrate_transactions_index(c):
+    """Ajoute un index (user_id, created_at) sur `transactions` s'il n'existe pas
+    déjà. Idempotent, comme les autres migrations ci-dessus : sans effet une fois
+    l'index posé."""
+    await c.execute(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'transactions' AND INDEX_NAME = 'idx_user_created'"
+    )
+    (already_done,) = await c.fetchone()
+    if already_done:
+        return
+
+    await c.execute("ALTER TABLE transactions ADD INDEX idx_user_created (user_id, created_at)")
 
 
 async def _migrate_env_to_config(c):
