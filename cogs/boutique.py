@@ -9,6 +9,7 @@ load_dotenv()
 from utils.database import get_pool
 from utils import cache
 from utils.config import get_config
+from utils.transactions import log_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +108,7 @@ class AchatSelect(discord.ui.Select):
                                 )
                                 logger.info(f"[DB] Rôle temporaire ajouté : user={interaction.user.id}, role={role.id}, expires={expires_at}")
 
+                            await log_transaction(cursor, interaction.user.id, "achat", -price, f"Achat : {name}")
                             await conn.commit()
                             await interaction.followup.send(
                                 f"🛒 **Achat réussi !**\n\n🎭 Rôle : **{role.name}**\n💰 Prix : **{price} €**",
@@ -131,6 +133,7 @@ class AchatSelect(discord.ui.Select):
                                     (interaction.user.id, valeur)
                                 )
 
+                            await log_transaction(cursor, interaction.user.id, "achat", -price, f"Achat : {name}")
                             await conn.commit()
                             await interaction.followup.send(
                                 f"🛒 **Achat réussi !**\n\n📦 Objet : **{name}**\n💰 Prix : **{price} €**",
@@ -142,6 +145,7 @@ class AchatSelect(discord.ui.Select):
                                 "UPDATE utilisateurs SET xp = xp + %s WHERE user_id = %s",
                                 (valeur, interaction.user.id)
                             )
+                            await log_transaction(cursor, interaction.user.id, "achat", -price, f"Achat : {name}")
                             await conn.commit()
                             # Écriture SQL directe sur xp en dehors du cache (utils/cache.py) :
                             # on invalide plutôt que de tenter de le mettre à jour ici, pour ne
@@ -173,6 +177,55 @@ class AchatSelect(discord.ui.Select):
         await interaction.message.edit(view=self.view)
 
 
+class BoutiqueView(discord.ui.View):
+    def __init__(self, items):
+        super().__init__(timeout=60)
+        self.add_item(AchatSelect(items))
+
+
+async def build_boutique_display() -> tuple[discord.Embed, discord.ui.View]:
+    """Construit l'embed + le select d'achat de /boutique. Extrait de
+    BoutiqueCog.boutique() pour être réutilisable depuis le bouton "🛒 Boutique"
+    attaché à /profil (voir ProfilActionsView dans cogs/profile.py), sans dupliquer
+    la requête ni la mise en forme."""
+    embed = discord.Embed(title="🛍 Boutique", color=discord.Color.green())
+
+    items = []
+    try:
+        pool = get_pool()
+        async with pool.acquire() as conn:
+            async with conn.cursor() as cursor:
+                await cursor.execute("SELECT name, price, type, valeur, duration FROM shop")
+                items = await cursor.fetchall()
+    except aiomysql.Error as e:
+        logger.critical(f"Erreur SQL boutique : {e}", exc_info=True)
+
+    if not items:
+        embed.description = "❌ Boutique vide"
+    else:
+        for name, price, item_type, valeur, duration in items:
+            if item_type == 1:
+                type_str = "Rôle"
+                if duration is not None:
+                    type_str += " temporaire"
+                else:
+                    type_str += " permanent"
+            elif item_type == 2:
+                type_str = "Objet d'inventaire"
+            elif item_type == 3:
+                type_str = "XP"
+            else:
+                type_str = "Inconnu"
+
+            desc = f" **Prix :** {price} €\n **Type :** {type_str}"
+            if duration is not None and item_type == 1:
+                desc += f"\n **Durée :** {duration} jours"
+
+            embed.add_field(name=name, value=desc, inline=False)
+
+    return embed, BoutiqueView(items)
+
+
 class BoutiqueCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -180,11 +233,6 @@ class BoutiqueCog(commands.Cog):
 
     def cog_unload(self):
         self.check_temp_roles.cancel()
-
-    class BoutiqueView(discord.ui.View):
-        def __init__(self, items):
-            super().__init__(timeout=60)
-            self.add_item(AchatSelect(items))
 
     @tasks.loop(minutes=5)
     async def check_temp_roles(self):
@@ -264,46 +312,8 @@ class BoutiqueCog(commands.Cog):
             return
 
         await interaction.response.defer()
-
-        embed = discord.Embed(
-            title="🛍 Boutique",
-            color=discord.Color.green()
-        )
-
-        items = []
-        try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute("SELECT name, price, type, valeur, duration FROM shop")
-                    items = await cursor.fetchall()
-        except aiomysql.Error as e:
-            logger.critical(f"Erreur SQL boutique : {e}", exc_info=True)
-
-        if not items:
-            embed.description = "❌ Boutique vide"
-        else:
-            for name, price, item_type, valeur, duration in items:
-                if item_type == 1:
-                    type_str = "Rôle"
-                    if duration is not None:
-                        type_str += " temporaire"
-                    else:
-                        type_str += " permanent"
-                elif item_type == 2:
-                    type_str = "Objet d'inventaire"
-                elif item_type == 3:
-                    type_str = "XP"
-                else:
-                    type_str = "Inconnu"
-
-                desc = f" **Prix :** {price} €\n **Type :** {type_str}"
-                if duration is not None and item_type == 1:
-                    desc += f"\n **Durée :** {duration} jours"
-
-                embed.add_field(name=name, value=desc, inline=False)
-
-        await interaction.followup.send(embed=embed, view=self.BoutiqueView(items))
+        embed, view = await build_boutique_display()
+        await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="inventaire", description="Affiche les objets que tu as achetés en boutique")
     async def inventaire(self, interaction: discord.Interaction):
