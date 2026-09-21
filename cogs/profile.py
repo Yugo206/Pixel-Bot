@@ -13,6 +13,7 @@ from utils import cache
 from utils.config import get_config
 from utils.profile_card import generate_profile_card
 from utils.transactions import log_transaction
+from utils.views import TimedView
 from cogs.boutique import build_boutique_display
 
 logger = logging.getLogger(__name__)
@@ -199,9 +200,9 @@ class JeuButton(discord.ui.Button):
         await interaction.response.send_modal(JeuModal(self.jeu, valeurs_existantes))
 
 
-class PersonnalisationView(discord.ui.View):
+class PersonnalisationView(TimedView):
     def __init__(self, jeux: list):
-        super().__init__(timeout=180)
+        super().__init__()
         for jeu in jeux:
             self.add_item(JeuButton(jeu))
 
@@ -230,11 +231,15 @@ class DestinataireSelect(discord.ui.UserSelect):
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.send_modal(MontantDonModal(self.values[0]))
+        # Réinitialise le select (voir TimedView) : sans ça, Discord garde le
+        # membre choisi affiché comme sélectionné et le même choix ne peut pas
+        # être refait (ex: modale annulée, on veut retenter avec le même membre).
+        await self.view.message.edit(view=self.view)
 
 
-class DestinataireView(discord.ui.View):
+class DestinataireView(TimedView):
     def __init__(self):
-        super().__init__(timeout=180)
+        super().__init__()
         self.add_item(DestinataireSelect())
 
 
@@ -256,52 +261,65 @@ class ProfilActionsSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "donner":
+            view = DestinataireView()
             await interaction.response.send_message(
-                "Choisis à qui donner de l'argent :", view=DestinataireView(), ephemeral=True
+                "Choisis à qui donner de l'argent :", view=view, ephemeral=True
             )
+            view.message = await interaction.original_response()
+            # Réinitialise ce select sur la carte /profil (voir TimedView) : sans
+            # ça, Discord le garde affiché sur "Donner de l'argent" et le même
+            # choix ne peut pas être refait (ex: reconsulter l'historique juste
+            # après, ou redonner de l'argent une seconde fois).
+            await self.view.message.edit(view=self.view)
             return
 
         await interaction.response.defer(ephemeral=True)
-        pool = get_pool()
         try:
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
-                    # LIMIT 10 : voir table `transactions` (utils/setupdatabase.py) — un
-                    # pur journal, jamais relu pour recalculer un solde.
-                    await cursor.execute(
-                        "SELECT type, montant, detail, created_at FROM transactions "
-                        "WHERE user_id = %s ORDER BY created_at DESC, id DESC LIMIT 10",
-                        (interaction.user.id,)
-                    )
-                    rows = await cursor.fetchall()
-        except aiomysql.Error as e:
-            logger.critical(f"[profil_actions] Erreur DB : {e}", exc_info=True)
-            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
-            return
+            pool = get_pool()
+            try:
+                async with pool.acquire() as conn:
+                    async with conn.cursor() as cursor:
+                        # LIMIT 10 : voir table `transactions` (utils/setupdatabase.py) —
+                        # un pur journal, jamais relu pour recalculer un solde.
+                        await cursor.execute(
+                            "SELECT type, montant, detail, created_at FROM transactions "
+                            "WHERE user_id = %s ORDER BY created_at DESC, id DESC LIMIT 10",
+                            (interaction.user.id,)
+                        )
+                        rows = await cursor.fetchall()
+            except aiomysql.Error as e:
+                logger.critical(f"[profil_actions] Erreur DB : {e}", exc_info=True)
+                await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+                return
 
-        if not rows:
-            await interaction.followup.send("Aucune transaction pour l'instant.", ephemeral=True)
-            return
+            if not rows:
+                await interaction.followup.send("Aucune transaction pour l'instant.", ephemeral=True)
+                return
 
-        lignes = []
-        for _type, montant, detail, created_at in rows:
-            signe = "+" if montant > 0 else ""
-            lignes.append(f"<t:{created_at}:d> — **{signe}{montant} €** — {detail}")
-        embed = discord.Embed(
-            title="📜 Historique des transactions",
-            description="\n".join(lignes),
-            color=discord.Color.green()
-        )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+            lignes = []
+            for _type, montant, detail, created_at in rows:
+                signe = "+" if montant > 0 else ""
+                lignes.append(f"<t:{created_at}:d> — **{signe}{montant} €** — {detail}")
+            embed = discord.Embed(
+                title="📜 Historique des transactions",
+                description="\n".join(lignes),
+                color=discord.Color.green()
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        finally:
+            # Réinitialise le select (voir TimedView) quel que soit le chemin
+            # emprunté ci-dessus (succès, erreur DB, historique vide) : sinon
+            # reconsulter l'historique une seconde fois ne redéclenche rien.
+            await self.view.message.edit(view=self.view)
 
 
-class ProfilActionsView(discord.ui.View):
+class ProfilActionsView(TimedView):
     """Boutons + select attachés à /profil : personnalisation, argent (historique/
     don via ProfilActionsSelect) et accès rapide à la boutique. Agit toujours sur
     qui clique (interaction.user), pas sur le propriétaire du profil affiché —
     même principe que AchatSelect dans cogs/boutique.py."""
     def __init__(self):
-        super().__init__(timeout=180)
+        super().__init__()
         self.add_item(ProfilActionsSelect())
 
     @discord.ui.button(label="🎮 Personnaliser mon profil", style=discord.ButtonStyle.blurple, row=1)
@@ -321,11 +339,13 @@ class ProfilActionsView(discord.ui.View):
             )
             return
 
+        view = PersonnalisationView(jeux)
         await interaction.response.send_message(
             "Choisis quel jeu/plateforme tu veux renseigner :",
-            view=PersonnalisationView(jeux),
+            view=view,
             ephemeral=True
         )
+        view.message = await interaction.original_response()
 
     @discord.ui.button(label="🛒 Boutique", style=discord.ButtonStyle.green, row=1)
     async def boutique(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -336,7 +356,7 @@ class ProfilActionsView(discord.ui.View):
             return
         await interaction.response.defer(ephemeral=True)
         embed, view = await build_boutique_display()
-        await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
 class Profile(commands.Cog):
@@ -384,9 +404,12 @@ class Profile(commands.Cog):
         fichier = await generate_profile_card(interaction.user, argent, xp, rang)
         view = ProfilActionsView() if interaction.guild is not None else None
         if interaction.response.is_done():
-            await interaction.followup.send(file=fichier, view=view)
+            message = await interaction.followup.send(file=fichier, view=view)
         else:
             await interaction.response.send_message(file=fichier, view=view)
+            message = await interaction.original_response()
+        if view is not None:
+            view.message = message
 
     @app_commands.command(name="argent", description="Afficher ton solde d'argent")
     async def argent(self, interaction: discord.Interaction):

@@ -10,6 +10,7 @@ from utils.database import get_pool
 from utils import cache
 from utils.config import get_config
 from utils.transactions import log_transaction
+from utils.views import TimedView
 
 logger = logging.getLogger(__name__)
 
@@ -174,12 +175,17 @@ class AchatSelect(discord.ui.Select):
 
         self.disabled = True
         self.placeholder = "Objet acheté ✔"
-        await interaction.message.edit(view=self.view)
+        # interaction.message.edit() échoue silencieusement si le message est
+        # éphémère (cas du bouton "🛒 Boutique" sur /profil, voir
+        # ProfilActionsView.boutique dans cogs/profile.py) : self.view.message
+        # (voir TimedView) a été obtenu via followup.send()/original_response(),
+        # qui s'éditent correctement même pour un message éphémère.
+        await self.view.message.edit(view=self.view)
 
 
-class BoutiqueView(discord.ui.View):
+class BoutiqueView(TimedView):
     def __init__(self, items):
-        super().__init__(timeout=60)
+        super().__init__()
         self.add_item(AchatSelect(items))
 
 
@@ -313,7 +319,7 @@ class BoutiqueCog(commands.Cog):
 
         await interaction.response.defer()
         embed, view = await build_boutique_display()
-        await interaction.followup.send(embed=embed, view=view)
+        view.message = await interaction.followup.send(embed=embed, view=view)
 
     @app_commands.command(name="inventaire", description="Affiche les objets que tu as achetés en boutique")
     async def inventaire(self, interaction: discord.Interaction):
