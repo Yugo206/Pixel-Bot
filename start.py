@@ -19,7 +19,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from utils.database import connexion, create_pool, close_pool, get_pool
+from utils.database import connexion, create_pool, close_pool
 from utils.error_handler import DiscordErrorHandler
 from utils.setupdatabase import init_db
 from utils.config import load_config, get_config, missing_keys
@@ -90,7 +90,6 @@ async def ticket_watcher():
     await bot.wait_until_ready()
 
     now = int(time.time())
-    pool = get_pool()
 
     # Une seule connexion pour lister les tickets : suffisant, rapide, et on la relâche
     # tout de suite après (voir plus bas, chaque étape reprend sa propre connexion —
@@ -126,7 +125,7 @@ async def ticket_watcher():
                     thread = await bot.fetch_channel(thread_id)
                 except discord.NotFound:
                     # Le thread n'existe plus : on nettoie l'entrée orpheline.
-                    async with pool.acquire() as conn:
+                    async with connexion() as conn:
                         async with conn.cursor() as cur:
                             await cur.execute("DELETE FROM ticket WHERE thread_id = %s", (thread_id,))
                         await conn.commit()
@@ -153,7 +152,7 @@ async def ticket_watcher():
                         if not await _archive_avant_suppression(thread, closed_at, now):
                             continue
                     await thread.delete(reason="Ticket fermé depuis plus de 24h.")
-                    async with pool.acquire() as conn:
+                    async with connexion() as conn:
                         async with conn.cursor() as cur:
                             await cur.execute("DELETE FROM ticket WHERE thread_id = %s", (thread_id,))
                         await conn.commit()
@@ -181,7 +180,7 @@ async def ticket_watcher():
             # même ticket.
             # ---------------------------------------------------------
             if inactivity >= 24 * 3600 and not warn_12h:
-                async with pool.acquire() as conn:
+                async with connexion() as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "UPDATE ticket SET warn_12h = 1 WHERE thread_id = %s AND warn_12h IS NULL",
@@ -199,7 +198,7 @@ async def ticket_watcher():
             # réservation atomique que ci-dessus.
             # ---------------------------------------------------------
             if inactivity >= 72 * 3600:
-                async with pool.acquire() as conn:
+                async with connexion() as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "UPDATE ticket SET statut = 3, closed_at = %s WHERE thread_id = %s AND statut != 3",
@@ -239,12 +238,11 @@ async def staff_test_watcher():
     await bot.wait_until_ready()
 
     now = int(time.time())
-    pool = get_pool()
 
     guild_id = get_config("GUILD_ID")
     channel_id = get_config("CHANNEL_MODO_ID")
 
-    async with pool.acquire() as conn:
+    async with connexion() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'staff_test' AND end_time <= %s",
@@ -377,7 +375,7 @@ async def main():
 
     try:
         await init_db(pool)  # ✅ Crée la DB et toutes les tables avant les cogs
-        await load_config(pool)  # ✅ Charge la table `config` avant les cogs (voir utils/config.py)
+        await load_config()  # ✅ Charge la table `config` avant les cogs (voir utils/config.py)
 
         # OWNER_ID vient maintenant de la table `config` (voir _migrate_env_to_config
         # dans utils/setupdatabase.py) : il ne peut donc être lu qu'une fois init_db()

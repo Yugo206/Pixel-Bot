@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 import logging
 import aiomysql
 load_dotenv()
-from utils.database import get_pool
+from utils.database import connexion
 from utils.sanctions import get_modo_channel
 from utils.config import get_config
 import time
@@ -59,8 +59,7 @@ class RaisonModal(discord.ui.Modal, title="Raison du refus"):
             pass
 
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("DELETE FROM role_special WHERE user_id = %s", (membre.id,))
                 await conn.commit()
@@ -80,8 +79,7 @@ class Accepterview(discord.ui.View):
         await interaction.message.edit(view=self)
 
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT user_id FROM role_special WHERE message_accepter_id = %s",
                                    (interaction.message.id,))
@@ -141,8 +139,7 @@ class Accepterview(discord.ui.View):
                 await interaction.followup.send(f"❌ Impossible d'ajouter le rôle à {membre.mention} (permissions insuffisantes).")
                 return
 
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as cursor:
                 time_end = int(time.time()) + 7 * 24 * 3600
                 await cursor.execute(
@@ -156,8 +153,7 @@ class Accepterview(discord.ui.View):
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, emoji="❌", custom_id="recrutement:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT user_id FROM role_special WHERE message_accepter_id = %s", (interaction.message.id,))
                     row = await cursor.fetchone()
@@ -178,8 +174,7 @@ class Accepterview(discord.ui.View):
             # contrainte UNIQUE(user_id) sur role_special, ce membre ne pourrait
             # plus jamais repostuler même en revenant sur le serveur.
             try:
-                pool = get_pool()
-                async with pool.acquire() as conn:
+                async with connexion() as conn:
                     async with conn.cursor() as cursor:
                         await cursor.execute("DELETE FROM role_special WHERE user_id = %s", (user_id,))
                     await conn.commit()
@@ -230,9 +225,8 @@ class RecrutementModal(discord.ui.Modal, title="Formulaire de recrutement"):
             # utils/setupdatabase.py) : si ce membre a déjà une candidature en cours
             # (ex: double clic sur "Commencer" avant que la première n'ait été
             # enregistrée), l'INSERT échoue au lieu de créer un doublon silencieux.
-            pool = get_pool()
             try:
-                async with pool.acquire() as conn:
+                async with connexion() as conn:
                     async with conn.cursor() as c:
                         await c.execute(
                             "INSERT INTO role_special (user_id, status, message_accepter_id) VALUES (%s, %s, %s)",
@@ -276,8 +270,7 @@ class ConditionsSelect(discord.ui.View):
     async def commencer(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute("SELECT status FROM role_special WHERE user_id = %s", (interaction.user.id,))
                     row = await cur.fetchone()
@@ -306,8 +299,7 @@ class ConditionsSelect(discord.ui.View):
 
         # 3. Vérifie les avertissements (max 3)
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute("SELECT COUNT(*) FROM warns WHERE user_id = %s", (interaction.user.id,))
                     warn_count = (await cur.fetchone())[0]

@@ -11,6 +11,7 @@ cog (à l'import), là où une requête DB ne le serait pas.
 """
 import logging
 
+from utils.database import connexion
 from utils.setupdatabase import ENV_CONFIG_KEYS
 
 logger = logging.getLogger(__name__)
@@ -18,11 +19,11 @@ logger = logging.getLogger(__name__)
 _config: dict[str, str] = {}
 
 
-async def load_config(pool) -> None:
+async def load_config() -> None:
     """Charge la table `config` en mémoire. À appeler une seule fois au démarrage,
     avant tout code qui lit get_config()."""
     global _config
-    async with pool.acquire() as conn:
+    async with connexion() as conn:
         async with conn.cursor() as c:
             await c.execute("SELECT cle, valeur FROM config")
             _config = {cle: valeur for cle, valeur in await c.fetchall()}

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from utils.database import get_pool
+from utils.database import connexion
 from utils import cache
 from utils.config import get_config
 from utils.profile_card import generate_profile_card
@@ -95,9 +95,8 @@ async def _effectuer_don(interaction: discord.Interaction, destinataire: discord
         await interaction.followup.send("❌ Impossible de donner de l'argent à un bot.", ephemeral=True)
         return
 
-    pool = get_pool()
     try:
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as cursor:
                 # Déduction atomique et conditionnelle (même principe que l'achat en
                 # boutique, voir AchatSelect.callback dans cogs/boutique.py) : n'a
@@ -160,8 +159,7 @@ class JeuModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as cursor:
                 for cle, champ in self.champs:
                     valeur = champ.value.strip() if champ.value else ""
@@ -189,8 +187,10 @@ class JeuButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         cles = [cle for cle, _ in self.jeu["questions"]]
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        # connexion() : ces valeurs pré-remplissent la modale et sont réécrites
+        # telles quelles à la validation. Lues sur une image figée, elles
+        # remettaient en place une réponse que le membre venait de changer.
+        async with connexion() as conn:
             async with conn.cursor() as cursor:
                 placeholders = ",".join(["%s"] * len(cles))
                 await cursor.execute(
@@ -248,8 +248,7 @@ class DestinataireView(TimedView):
 async def _construire_historique(user_id: int) -> discord.Embed:
     """Embed des 20 dernières transactions de `user_id` (select "Actions" de
     /profil). Laisse remonter aiomysql.Error, signalée par l'appelant."""
-    pool = get_pool()
-    async with pool.acquire() as conn:
+    async with connexion() as conn:
         async with conn.cursor() as cursor:
             # LIMIT 20 : voir table `transactions` (utils/setupdatabase.py) —
             # un pur journal, jamais relu pour recalculer un solde.
@@ -288,8 +287,7 @@ async def _construire_classement(colonne: str, user_id: int) -> discord.Embed:
     if colonne not in COLONNES_CLASSEMENT:
         raise ValueError(f"Colonne de classement non autorisée : {colonne}")
 
-    pool = get_pool()
-    async with pool.acquire() as conn:
+    async with connexion() as conn:
         async with conn.cursor() as cursor:
             # colonne : validée juste au-dessus contre COLONNES_CLASSEMENT, sûre à interpoler.
             await cursor.execute(
@@ -479,9 +477,8 @@ class Profile(commands.Cog):
     async def profil(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        pool = get_pool()
         try:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                     result = await cursor.fetchone()
@@ -490,12 +487,12 @@ class Profile(commands.Cog):
             # membre voit 0 XP ici puis une valeur différente (40, la valeur de
             # seed du cache) dès qu'il utilise /niveau, uniquement selon l'ordre
             # dans lequel il tape les deux commandes.
-            xp = await cache.get_xp(pool, interaction.user.id)
+            xp = await cache.get_xp(interaction.user.id)
 
             # Rang XP : utilisateurs.xp est toujours à jour en base (bump_xp dans
             # on_message, cogs/events.py, écrit en DB dans le même handler), donc
             # une lecture directe ici est fiable sans passer par le cache.
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT COUNT(*) + 1 FROM utilisateurs WHERE xp > %s", (xp,))
                     (rang,) = await cursor.fetchone()
@@ -518,9 +515,8 @@ class Profile(commands.Cog):
     async def argent(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        pool = get_pool()
         try:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                     result = await cursor.fetchone()
@@ -550,11 +546,10 @@ class Profile(commands.Cog):
     async def niveau(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        pool = get_pool()
         # Via le cache mémoire (utils/cache.py) : même valeur que celle utilisée par
         # on_message pour calculer les niveaux, sans refaire un aller-retour DB si elle
         # est déjà en cache.
-        xp = await cache.get_xp(pool, interaction.user.id)
+        xp = await cache.get_xp(interaction.user.id)
         nv = self.get_level(xp)
         embed = discord.Embed(
             title="✨ Niveau",
@@ -572,9 +567,8 @@ class Profile(commands.Cog):
             await interaction.response.defer(ephemeral=True)
 
         now = int(time.time())
-        pool = get_pool()
         try:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     # Garantit d'abord l'existence de la ligne (un membre n'ayant
                     # jamais gagné d'XP/argent n'en a pas encore — même principe que
@@ -600,6 +594,12 @@ class Profile(commands.Cog):
                     gagne = cursor.rowcount == 1
 
                     if not gagne:
+                        # Lecture simple : connexion() garantit qu'elle voit la
+                        # réclamation qui fait échouer l'UPDATE ci-dessus, même
+                        # faite sur une autre connexion. Sur une image figée
+                        # d'avant, last_daily pouvait valoir NULL et le calcul
+                        # du délai plus bas plantait (ou, depuis MariaDB 11.6,
+                        # l'UPDATE lui-même échouait en erreur 1020).
                         await cursor.execute("SELECT last_daily FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                         (last_daily,) = await cursor.fetchone()
                     else:
