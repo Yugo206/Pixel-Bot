@@ -11,6 +11,7 @@ from cogs.warn import ContestationView, JOURS_EXPIRATION
 from utils.database import get_pool, increment_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 from utils.config import get_config
+from utils.transcript import archiver_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +384,7 @@ class ConfirmationClotureView(discord.ui.View):
             async with pool.acquire() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
-                        "UPDATE ticket SET statut = 2, closed_at = NULL, last_message = %s, warn_12h = NULL WHERE thread_id = %s",
+                        "UPDATE ticket SET statut = 2, closed_at = NULL, closed_by = NULL, last_message = %s, warn_12h = NULL WHERE thread_id = %s",
                         (now_ts, thread_id)
                     )
                 await conn.commit()
@@ -491,16 +492,24 @@ class FermerView(discord.ui.View):
         await thread.send(f"Ce ticket a été fermé par {interaction.user.mention}. Il sera supprimé <t:{ts}:R>")
         await thread.edit(locked=True, archived=True)
 
+        closed_at = int(time.time())
         try:
             async with pool.acquire() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
-                        "UPDATE ticket SET statut = 3, closed_at = %s WHERE thread_id = %s",
-                        (int(time.time()), thread.id)
+                        "UPDATE ticket SET statut = 3, closed_at = %s, closed_by = %s WHERE thread_id = %s",
+                        (closed_at, interaction.user.id, thread.id)
                     )
                 await conn.commit()
         except aiomysql.Error as e:
             logger.critical(f"[tickets:fermer] Erreur DB : {e}", exc_info=True)
+
+        # Transcription HTML + métadonnées pour /archive et /stats-staff, avec le
+        # même horodatage de fermeture que la table `ticket`. En dernier : le
+        # message de fermeture ci-dessus fait partie de l'archive, et une
+        # génération lente (pièces jointes à intégrer) ne retarde rien d'autre.
+        # Ne lève jamais (échecs loggés dans utils/transcript.py).
+        await archiver_ticket(bot, thread, closed_by=interaction.user.id, closed_at=closed_at)
 
 
 class TicketCreateView(discord.ui.View):
