@@ -55,22 +55,29 @@ def _ticket_de_l_avis(message: discord.Message | None) -> str:
     return f" sur le ticket `{match.group(1)}`" if match else ""
 
 
+MSG_PARTENARIAT_FERME = "🔒 Ce ticket est fermé : la demande de partenariat n'est plus possible."
+
+
 async def _verifier_auteur_ticket(interaction: discord.Interaction) -> bool:
     """Réservé à l'auteur du ticket dans lequel se trouve le bouton (flux
-    partenariat) : un modérateur ou un membre invité dans le thread ne doit pas
-    pouvoir remplir la demande à sa place."""
+    partenariat), tant que ce ticket est ouvert : un modérateur ou un membre
+    invité dans le thread ne doit pas pouvoir remplir la demande à sa place, et
+    un ticket fermé (thread gardé 24h avant sa suppression) ne doit plus
+    recevoir de demande."""
     if not await verifier_serveur(interaction):
         return False
     try:
         async with connexion() as conn:
             async with conn.cursor() as c:
-                await c.execute("SELECT membre_id FROM ticket WHERE thread_id = %s", (interaction.channel_id,))
+                await c.execute("SELECT membre_id, statut FROM ticket WHERE thread_id = %s", (interaction.channel_id,))
                 row = await c.fetchone()
     except aiomysql.Error as e:
         logger.error(f"[tickets] Erreur DB en vérifiant l'auteur du ticket {interaction.channel_id} : {e}")
         return await refuser(interaction, MSG_ERREUR)
     if row is None:
         return await refuser(interaction, "❌ Ce ticket est introuvable (fermé ou supprimé).")
+    if row[1] == 3:
+        return await refuser(interaction, MSG_PARTENARIAT_FERME)
     if row[0] != interaction.user.id:
         return await refuser(interaction, "❌ Seul l'auteur du ticket peut remplir cette demande.")
     return True
@@ -973,6 +980,7 @@ class ConditionsPartenariatView(VuePersistante):
         # démarrage (bot.add_view, voir cogs/events.py) pour rester persistante, ce
         # qui écraserait des attributs stockés sur l'instance par une instance vide
         # si le bot redémarre avant que l'utilisateur ait cliqué.
+        ferme = False
         try:
             async with connexion() as conn:
                 async with conn.cursor() as c:
@@ -980,9 +988,18 @@ class ConditionsPartenariatView(VuePersistante):
                         "UPDATE ticket SET partenariat_description = %s, partenariat_pub = %s WHERE thread_id = %s",
                         (description, pub, thread.id)
                     )
+                    # Ticket fermé pendant les deux attentes ci-dessus (jusqu'à
+                    # 8 minutes) : pas de choix de mention qui serait refusé au clic.
+                    await c.execute("SELECT statut FROM ticket WHERE thread_id = %s", (thread.id,))
+                    row = await c.fetchone()
+                    ferme = row is None or row[0] == 3
                 await conn.commit()
         except aiomysql.Error as e:
             logger.critical(f"[tickets:partenariat] Erreur DB : {e}", exc_info=True)
+
+        if ferme:
+            await thread.send(MSG_PARTENARIAT_FERME)
+            return
 
         await thread.send(
             embed=discord.Embed(
