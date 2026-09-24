@@ -7,7 +7,7 @@ import asyncio
 from dotenv import load_dotenv
 load_dotenv()
 from datetime import datetime, timedelta, timezone
-from cogs.warn import ContestationView
+from cogs.warn import ContestationView, JOURS_EXPIRATION
 from utils.database import get_pool, increment_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 from utils.config import get_config
@@ -281,6 +281,9 @@ class SatisfactionView(discord.ui.View):
                 color=discord.Color.orange()
             )
 
+        # Même mention que le MP de /warn (cogs/warn.py) : ce warn expire aussi
+        # automatiquement (check_warn_expirations).
+        embed.description += f"\n⌛ Il expirera au plus tôt dans {JOURS_EXPIRATION} jours."
         embed.add_field(name="C'est une erreur ?", value="Va vite ouvrir un ticket et conteste cet avertissement")
         # Footer parsé par ContestationView (cogs/warn.py) pour retrouver le warn
         # concerné sans avoir besoin de le stocker sur l'instance de la vue.
