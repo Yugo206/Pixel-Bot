@@ -8,11 +8,16 @@ from datetime import datetime, timezone
 import time
 from dotenv import load_dotenv
 load_dotenv()
-from utils.database import connexion, increment_warn, decrement_warn
+from utils.database import compter_warns, connexion, increment_warn, decrement_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 from utils.config import get_config
+from utils.autorisations import refuser, repondre, verifier_mp, verifier_staff
+from utils.staff import est_owner
+from utils.views import Modale, VuePersistante, copie_vue, liberer_clic, reserver_clic
 
 logger = logging.getLogger(__name__)
+
+MSG_DEJA_TRAITE_CONTESTATION = "⚠️ Cette contestation a déjà été traitée par un autre modérateur."
 
 _WARN_ID_RE = re.compile(r"ID du warn\s*:\s*(\d+)")
 
@@ -78,26 +83,81 @@ def _echeance_expiration(created_at, created_at_iso, derniere_expiration) -> int
     return max(_date_pose_warn(created_at, created_at_iso), derniere_expiration or 0) + WARN_EXPIRATION
 
 
-class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
+def _tronquer(texte: str | None, limite: int = 1024) -> str | None:
+    """Texte coupé à `limite` caractères (champ d'embed : 1024 au plus)."""
+    if texte and len(texte) > limite:
+        return texte[:limite - 1] + "…"
+    return texte
+
+
+async def _marquer_contestation(message: discord.Message, statut: str | None = None,
+                                couleur: discord.Color | None = None) -> None:
+    """Désactive les boutons du message de contestation (salon modération) et y
+    ajoute la décision prise, pour que le staff voie d'un coup d'œil qu'elle est
+    traitée et par qui. Sans `statut`, désactive seulement les boutons (cas d'une
+    contestation déjà traitée par quelqu'un d'autre : sa décision est déjà
+    affichée)."""
+    kwargs = {"view": copie_vue(RefuseroracceptercontestationView, message, None)}
+    if statut and message.embeds:
+        embed = message.embeds[0].copy()
+        embed.add_field(name="Statut", value=statut, inline=False)
+        if couleur is not None:
+            embed.color = couleur
+        kwargs["embed"] = embed
+    try:
+        await message.edit(**kwargs)
+    except discord.HTTPException as e:
+        logger.warning(f"[warn:contestation] Message {message.id} non mis à jour : {e}")
+
+
+async def _mp_membre(bot, membre_id: int, embed: discord.Embed) -> bool:
+    """MP best-effort au membre ; False s'il n'a pas pu être prévenu (MP fermés,
+    plus aucun serveur en commun, compte supprimé)."""
+    try:
+        user = bot.get_user(membre_id) or await bot.fetch_user(membre_id)
+        await user.send(embed=embed)
+    except discord.HTTPException:
+        return False
+    return True
+
+
+class RaisonrefuserModal(Modale, title="Raison du refus"):
     raison = discord.ui.TextInput(
         label="Raison du refus",
         placeholder="Je trouve que ce warn est mérité car ...",
         min_length=10,
-        max_length=1092,
+        # 1000 : la raison s'affiche dans un champ d'embed (1024 au plus).
+        max_length=1000,
         style=discord.TextStyle.paragraph,
         required=True
     )
 
-    def __init__(self, membre, message_id):
+    def __init__(self, message: discord.Message, membre_id: int):
         super().__init__()
-        self.membre = membre
-        self.message_id = message_id
+        self.message = message
+        self.membre_id = membre_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message(
-            "Refus envoyé au membre ❌",
-            ephemeral=True
-        )
+        await interaction.response.defer()
+
+        # Réservation atomique : si un autre modérateur a accepté (ou refusé)
+        # la contestation pendant que ce formulaire était ouvert, ce refus
+        # n'est pas envoyé au membre par-dessus sa décision.
+        try:
+            async with connexion() as conn:
+                async with conn.cursor() as c:
+                    await c.execute("DELETE FROM contestations WHERE message_id = %s", (self.message.id,))
+                    gagne = c.rowcount == 1
+                await conn.commit()
+        except aiomysql.Error as e:
+            logger.critical(f"[warn:refuser] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur de base de données est survenue, réessaie.", ephemeral=True)
+            return
+
+        if not gagne:
+            await interaction.followup.send(MSG_DEJA_TRAITE_CONTESTATION, ephemeral=True)
+            await _marquer_contestation(self.message)
+            return
 
         embed = discord.Embed(
             title="Contestation refusée",
@@ -106,50 +166,56 @@ class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
         )
         embed.add_field(name="Modérateur", value=interaction.user.mention, inline=False)
         embed.add_field(name="Raison", value=self.raison.value, inline=False)
+        mp_envoye = await _mp_membre(interaction.client, self.membre_id, embed)
 
-        try:
-            await self.membre.send(embed=embed)
-        except discord.Forbidden:
-            pass
-
-        async with connexion() as conn:
-            async with conn.cursor() as c:
-                await c.execute("DELETE FROM contestations WHERE message_id = %s", (self.message_id,))
-            await conn.commit()
+        await _marquer_contestation(
+            self.message, f"❌ Refusée par {interaction.user.mention}", discord.Color.red()
+        )
+        message = "Refus envoyé au membre ❌"
+        if not mp_envoye:
+            message = "Refus enregistré ❌ (ses MP sont fermés : le membre n'a pas été prévenu)."
+        await interaction.followup.send(message, ephemeral=True)
 
 
-class RefuseroracceptercontestationView(discord.ui.View):
+class RefuseroracceptercontestationView(VuePersistante):
     """Vue persistante et sans état : les infos de la contestation (membre, warn concerné)
     sont retrouvées dans la table `contestations` à partir de l'id du message cliqué,
     au lieu d'être stockées sur l'instance (ce qui casse dès qu'elle est enregistrée
-    globalement via bot.add_view)."""
+    globalement via bot.add_view). Réservée au staff, et jamais sur sa propre
+    contestation."""
 
-    def __init__(self):
-        super().__init__(timeout=None)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await verifier_staff(interaction, "❌ Seul le staff peut traiter une contestation.")
+
+    async def _contestation(self, interaction: discord.Interaction, colonnes: str):
+        """Ligne `contestations` du message cliqué, ou None après avoir répondu
+        (introuvable, ou contestation du modérateur lui-même)."""
+        async with connexion() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    f"SELECT {colonnes} FROM contestations WHERE message_id = %s",
+                    (interaction.message.id,)
+                )
+                row = await cur.fetchone()
+
+        if row is None:
+            await interaction.response.edit_message(
+                view=copie_vue(RefuseroracceptercontestationView, interaction.message, None)
+            )
+            await interaction.followup.send(MSG_DEJA_TRAITE_CONTESTATION, ephemeral=True)
+            return None
+        if row[0] == interaction.user.id:
+            await refuser(interaction, "❌ Tu ne peux pas traiter ta propre contestation.")
+            return None
+        return row
 
     @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="warn:accepter")
     async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            async with connexion() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT membre_id, warn_id FROM contestations WHERE message_id = %s",
-                        (interaction.message.id,)
-                    )
-                    row = await cur.fetchone()
-
+            row = await self._contestation(interaction, "membre_id, warn_id")
             if row is None:
-                await interaction.response.send_message("❌ Contestation introuvable (déjà traitée ?).", ephemeral=True)
                 return
-
             membre_id, warn_id = row
-            guild = interaction.guild
-            membre = guild.get_member(membre_id)
-            if membre is None:
-                try:
-                    membre = await guild.fetch_member(membre_id)
-                except discord.NotFound:
-                    membre = None
 
             # On defer avant de toucher la DB (et on n'édite le message qu'une fois
             # la suppression du warn effectivement commit) : si la DB échoue, le
@@ -194,130 +260,183 @@ class RefuseroracceptercontestationView(discord.ui.View):
                         await decrement_warn(conn, membre_id)
 
                 await conn.commit()
-
-            if not gagne:
-                await interaction.followup.send("❌ Cette contestation a déjà été traitée.", ephemeral=True)
-                return
-
-            for b in self.children:
-                b.disabled = True
-            await interaction.edit_original_response(view=self)
-
-            if membre is not None:
-                embed = discord.Embed(
-                    title="Contestation acceptée",
-                    description=(
-                        "Ton warn a été retiré"
-                        if warn_retire else
-                        "Ce warn avait déjà été retiré entre-temps (expiration automatique "
-                        "ou modérateur) : il ne compte plus dans tes avertissements."
-                    ),
-                    color=discord.Color.green()
-                )
-                embed.add_field(name="Modérateur :", value=interaction.user.mention, inline=False)
-
-                try:
-                    await membre.send(embed=embed)
-                except discord.Forbidden:
-                    pass
-
-            if warn_retire:
-                await interaction.followup.send("Sanction retirée ✅", ephemeral=True)
-            else:
-                await interaction.followup.send(
-                    "Contestation clôturée ✅ — ce warn n'existait plus (déjà expiré ou retiré "
-                    "via /unwarn), le compteur du membre n'a pas été modifié.",
-                    ephemeral=True
-                )
         except aiomysql.Error as e:
             logger.critical(f"[warn:accepter] Erreur DB : {e}", exc_info=True)
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Une erreur de base de données est survenue, réessaie.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Une erreur de base de données est survenue, réessaie.", ephemeral=True)
-        except Exception as e:
-            logger.error(f"[warn:accepter] {e}")
-            if interaction.response.is_done():
-                await interaction.followup.send("❌ Une erreur inattendue est survenue, réessaie.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Une erreur inattendue est survenue, réessaie.", ephemeral=True)
+            await repondre(interaction, "❌ Une erreur de base de données est survenue, réessaie.")
+            return
+
+        if not gagne:
+            await interaction.followup.send(MSG_DEJA_TRAITE_CONTESTATION, ephemeral=True)
+            await _marquer_contestation(interaction.message)
+            return
+
+        await _marquer_contestation(
+            interaction.message, f"✅ Acceptée par {interaction.user.mention}", discord.Color.green()
+        )
+
+        embed = discord.Embed(
+            title="Contestation acceptée",
+            description=(
+                "Ton warn a été retiré"
+                if warn_retire else
+                "Ce warn avait déjà été retiré entre-temps (expiration automatique "
+                "ou modérateur) : il ne compte plus dans tes avertissements."
+            ),
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Modérateur :", value=interaction.user.mention, inline=False)
+        mp_envoye = await _mp_membre(interaction.client, membre_id, embed)
+
+        if warn_retire:
+            message = "Sanction retirée ✅"
+        else:
+            message = (
+                "Contestation clôturée ✅ — ce warn n'existait plus (déjà expiré ou retiré "
+                "via /unwarn), le compteur du membre n'a pas été modifié."
+            )
+        if not mp_envoye:
+            message += "\n(Ses MP sont fermés : le membre n'a pas été prévenu.)"
+        await interaction.followup.send(message, ephemeral=True)
 
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            async with connexion() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute(
-                        "SELECT membre_id FROM contestations WHERE message_id = %s",
-                        (interaction.message.id,)
-                    )
-                    row = await cur.fetchone()
+            row = await self._contestation(interaction, "membre_id")
+        except aiomysql.Error as e:
+            logger.critical(f"[warn:refuser] Erreur DB : {e}", exc_info=True)
+            await repondre(interaction, "❌ Une erreur de base de données est survenue, réessaie.")
+            return
+        if row is None:
+            return
 
-            if row is None:
-                await interaction.response.send_message("❌ Contestation introuvable (déjà traitée ?).", ephemeral=True)
-                return
-
-            membre_id = row[0]
-            guild = interaction.guild
-            membre = guild.get_member(membre_id)
-            if membre is None:
-                try:
-                    membre = await guild.fetch_member(membre_id)
-                except discord.NotFound:
-                    membre = None
-
-            if membre is None:
-                await interaction.response.send_message("❌ Ce membre n'est plus sur le serveur.", ephemeral=True)
-                return
-
-            await interaction.response.send_modal(RaisonrefuserModal(membre, interaction.message.id))
-            for child in self.children:
-                child.disabled = True
-            await interaction.message.edit(view=self)
-        except Exception as e:
-            logger.error(f"[warn:refuser] {e}")
+        # Les boutons ne sont désactivés qu'à l'envoi du formulaire (voir
+        # RaisonrefuserModal) : un formulaire fermé sans l'envoyer ne doit pas
+        # rendre la contestation impossible à traiter. Un membre parti du
+        # serveur peut aussi voir sa contestation refusée (le MP sera
+        # simplement impossible), pour qu'elle ne reste pas en suspens.
+        await interaction.response.send_modal(RaisonrefuserModal(interaction.message, row[0]))
 
 
-class ContestationModal(discord.ui.Modal, title="Contestation"):
+async def _verifier_warn_contestable(user_id: int, warn_id: int | None) -> tuple[str | None, tuple | None]:
+    """(message d'erreur ou None, ligne du warn ou None) pour une contestation du
+    warn `warn_id` par `user_id` : le warn doit toujours exister, appartenir au
+    membre, et ne pas avoir déjà une contestation en attente. Sans id (ancien MP
+    sans footer), rien n'est vérifiable : on laisse passer."""
+    if warn_id is None:
+        return None, None
+    async with connexion() as conn:
+        async with conn.cursor() as c:
+            await c.execute(
+                "SELECT user_id, raison, created_at, created_at_iso FROM warns WHERE id = %s", (warn_id,)
+            )
+            warn = await c.fetchone()
+            await c.execute("SELECT 1 FROM contestations WHERE warn_id = %s LIMIT 1", (warn_id,))
+            en_attente = await c.fetchone() is not None
+    if warn is None:
+        return "ℹ️ Cet avertissement n'existe plus (expiré ou déjà retiré) : il n'y a plus rien à contester.", None
+    if warn[0] != user_id:
+        return "❌ Cet avertissement ne te concerne pas.", None
+    if en_attente:
+        return "⚠️ Tu as déjà contesté cet avertissement : le staff va te répondre en MP.", None
+    return None, warn
+
+
+class ContestationModal(Modale, title="Contestation"):
     raison = discord.ui.TextInput(
         style=discord.TextStyle.paragraph,
         placeholder="Je trouve ce warn injuste car ...",
         min_length=100,
-        max_length=1092,
+        # 1000 : la raison s'affiche dans un champ d'embed (1024 au plus).
+        max_length=1000,
         label="Explique pourquoi tu trouves ce warn injuste",
         required=True
     )
 
-    def __init__(self, bot, membre, warn):
+    def __init__(self, message: discord.Message, warn_id: int | None):
         super().__init__()
-        self.bot = bot
-        self.membre = membre
-        self.warn = warn  # tuple (id,) ou None — seul l'id est utilisé ci-dessous
+        self.message = message
+        self.warn_id = warn_id
 
     async def on_submit(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Merci, tu recevras une réponse sous 24h.", ephemeral=True)
-
-        channel = await get_modo_channel(self.bot)
-        if channel is None:
+        # Une seule contestation par MP, même si le formulaire a été ouvert deux
+        # fois avant l'envoi.
+        if not reserver_clic(interaction, "contest"):
+            await repondre(interaction, "⚠️ Tu as déjà contesté cet avertissement : le staff va te répondre en MP.")
             return
+        await interaction.response.defer()
+        try:
+            envoyee = await self._envoyer(interaction)
+        except Exception:
+            liberer_clic(interaction, "contest")
+            raise
+        if not envoyee:
+            liberer_clic(interaction, "contest")
+
+    async def _envoyer(self, interaction: discord.Interaction) -> bool:
+        message = interaction.message or self.message
+        try:
+            erreur, warn = await _verifier_warn_contestable(interaction.user.id, self.warn_id)
+        except aiomysql.Error as e:
+            logger.critical(f"[warn:contestation] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur de base de données est survenue, réessaie.", ephemeral=True)
+            return False
+        if erreur:
+            await interaction.edit_original_response(view=copie_vue(ContestationView, message, None))
+            await interaction.followup.send(erreur, ephemeral=True)
+            return True
+
+        channel = await get_modo_channel(interaction.client)
+        if channel is None:
+            logger.error("[warn:contestation] Salon de modération (CHANNEL_MODO_ID) introuvable.")
+            await interaction.followup.send(
+                "❌ Ta contestation n'a pas pu être transmise au staff, réessaie plus tard.", ephemeral=True
+            )
+            return False
 
         embed = discord.Embed(title="Contestation", color=discord.Color.green(), description="Nouvelle contestation !")
-        embed.add_field(name="Membre :", value=interaction.user.mention, inline=False)
+        embed.add_field(name="Membre :", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=False)
+        warn_raison = warn_created_at = None
+        if warn is not None:
+            _, warn_raison, created_at, created_at_iso = warn
+            warn_created_at = _date_pose_warn(created_at, created_at_iso) or None
+            date_txt = f"<t:{warn_created_at}:d>" if warn_created_at else "date inconnue"
+            embed.add_field(
+                name=f"Avertissement #{self.warn_id} — {date_txt}",
+                value=_tronquer(warn_raison) or "Pas de raison précisée",
+                inline=False
+            )
         embed.add_field(name="Raison : ", value=self.raison.value, inline=False)
 
-        msg = await channel.send(embed=embed, view=RefuseroracceptercontestationView())
+        msg = await channel.send(
+            embed=embed, view=copie_vue(RefuseroracceptercontestationView, None, set()),
+            allowed_mentions=discord.AllowedMentions.none()
+        )
+        try:
+            async with connexion() as conn:
+                async with conn.cursor() as c:
+                    await c.execute(
+                        "INSERT INTO contestations (message_id, membre_id, warn_id, warn_raison, warn_created_at) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (msg.id, interaction.user.id, self.warn_id, warn_raison, warn_created_at)
+                    )
+                await conn.commit()
+        except aiomysql.Error as e:
+            # Sans sa ligne en base, le message du staff ne peut pas être traité :
+            # on le retire, et le membre peut réessayer.
+            logger.critical(f"[warn:contestation] Erreur DB : {e}", exc_info=True)
+            try:
+                await msg.delete()
+            except discord.HTTPException:
+                pass
+            await interaction.followup.send("❌ Une erreur de base de données est survenue, réessaie.", ephemeral=True)
+            return False
 
-        warn_id = self.warn[0] if self.warn else None
-        async with connexion() as conn:
-            async with conn.cursor() as c:
-                await c.execute(
-                    "INSERT INTO contestations (message_id, membre_id, warn_id) VALUES (%s, %s, %s)",
-                    (msg.id, self.membre.id, warn_id)
-                )
-            await conn.commit()
+        await interaction.edit_original_response(view=copie_vue(ContestationView, message, None))
+        await interaction.followup.send("Merci, tu recevras une réponse sous 24h.", ephemeral=True)
+        return True
 
 
-class ContestationView(discord.ui.View):
+class ContestationView(VuePersistante):
     """Vue persistante et sans état : ce bouton n'apparaît que dans le MP du membre
     averti, donc le membre concerné est toujours interaction.user ; l'id du warn
     est retrouvé depuis le footer de l'embed (voir _extract_warn_id) plutôt que
@@ -325,16 +444,27 @@ class ContestationView(discord.ui.View):
     bot.add_view (voir cogs/events.py) — même principe que
     RefuseroracceptercontestationView ci-dessus."""
 
-    def __init__(self):
-        super().__init__(timeout=None)
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await verifier_mp(interaction)
 
     @discord.ui.button(label="Contestation", style=discord.ButtonStyle.red, custom_id="contest", emoji="❌")
     async def contest(self, interaction: discord.Interaction, button: discord.ui.Button):
         warn_id = _extract_warn_id(interaction.message)
-        warn = (warn_id,) if warn_id is not None else None
-        await interaction.response.send_modal(ContestationModal(interaction.client, interaction.user, warn))
-        button.disabled = True
-        await interaction.message.edit(view=self)
+        # Vérifié avant d'ouvrir le formulaire : le membre n'écrit pas 100
+        # caractères pour un warn déjà expiré ou déjà contesté.
+        try:
+            erreur, _ = await _verifier_warn_contestable(interaction.user.id, warn_id)
+        except aiomysql.Error as e:
+            logger.critical(f"[warn:contestation] Erreur DB : {e}", exc_info=True)
+            await repondre(interaction, "❌ Une erreur de base de données est survenue, réessaie.")
+            return
+        if erreur:
+            await interaction.response.edit_message(view=copie_vue(ContestationView, interaction.message, None))
+            await interaction.followup.send(erreur, ephemeral=True)
+            return
+        # Le bouton n'est désactivé qu'à l'envoi (voir ContestationModal) : un
+        # formulaire fermé par erreur ne doit pas empêcher de contester.
+        await interaction.response.send_modal(ContestationModal(interaction.message, warn_id))
 
 
 class Warn(commands.Cog):
@@ -375,10 +505,20 @@ class Warn(commands.Cog):
 
             for (user_id,) in bans:
                 try:
-                    user = await self.bot.fetch_user(user_id)
-                    await guild.unban(user, reason="Fin du ban temporaire")
-                except (discord.NotFound, discord.Forbidden):
-                    pass
+                    await guild.unban(discord.Object(id=user_id), reason="Fin du ban temporaire")
+                except discord.NotFound:
+                    pass  # Déjà débanni à la main (ou compte supprimé).
+                except discord.Forbidden:
+                    # Plus de permission de débannir : on ne réessaie pas toutes
+                    # les 5 minutes, mais le staff doit le faire à la main.
+                    logger.error(
+                        f"[check_tempbans] Impossible de débannir {user_id} (permissions "
+                        "insuffisantes) : à débannir manuellement."
+                    )
+                except discord.HTTPException as e:
+                    # Erreur passagère de l'API : la ligne est gardée, on réessaiera.
+                    logger.warning(f"[check_tempbans] Débannissement de {user_id} reporté : {e}")
+                    continue
 
                 async with connexion() as conn:
                     async with conn.cursor() as c:
@@ -566,6 +706,8 @@ class Warn(commands.Cog):
             pass
 
     @app_commands.command(name="warn", description="Avertit un membre")
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_messages=True)
     # Raison bornée à 1000 caractères : elle s'affiche dans un champ d'embed (MP au
     # membre, limite Discord de 1024) ; au-delà, le MP échouait alors que le warn
@@ -574,17 +716,28 @@ class Warn(commands.Cog):
                    raison: app_commands.Range[str, 1, 1000]):
         await interaction.response.defer(ephemeral=True)
 
-        if interaction.guild is None:
-            embed = discord.Embed(
-                title="Les messages privés...",
-                description="Cette commande n'est pas disponible en MP. Utilise-la directement sur le serveur !",
-                color=discord.Color.red()
-            )
-            await interaction.followup.send(embed=embed)
-            return
-
         modo = interaction.user
         membre = user
+
+        # Même hiérarchie que Discord pour un kick ou un ban : on n'avertit ni
+        # un bot, ni soi-même, ni le propriétaire du serveur, ni un membre dont
+        # le rôle le plus haut est égal ou supérieur au sien (sauf pour le
+        # propriétaire du serveur ou du bot). Sans ça, un modérateur pouvait
+        # faire mute ou bannir un collègue (paliers de sanction) d'un /warn.
+        guild = interaction.guild
+        erreur = None
+        if membre.bot:
+            erreur = "❌ Tu ne peux pas avertir un bot."
+        elif membre.id == modo.id:
+            erreur = "❌ Tu ne peux pas t'avertir toi-même."
+        elif membre.id == guild.owner_id:
+            erreur = "❌ Tu ne peux pas avertir le propriétaire du serveur."
+        elif (modo.id != guild.owner_id and not est_owner(modo.id)
+              and isinstance(modo, discord.Member) and membre.top_role >= modo.top_role):
+            erreur = "❌ Tu ne peux pas avertir un membre dont le rôle est égal ou supérieur au tien."
+        if erreur:
+            await interaction.followup.send(erreur, ephemeral=True)
+            return
 
         try:
             timestamp = int(time.time())
@@ -597,7 +750,7 @@ class Warn(commands.Cog):
                 # ci-dessous (un seul commit) : si l'un des deux échoue, l'autre est
                 # annulé plutôt que de désynchroniser le compteur de l'historique
                 # des warns.
-                warn_count = await increment_warn(conn, membre.id)
+                await increment_warn(conn, membre.id)
 
                 async with conn.cursor() as c:
                     await c.execute(
@@ -609,19 +762,14 @@ class Warn(commands.Cog):
                     )
                     warn_id = c.lastrowid
 
+                # Palier de sanction d'après les warns réellement en cours (voir
+                # compter_warns), celui qu'on vient d'ajouter compris.
+                warn_count = await compter_warns(conn, membre.id)
                 await conn.commit()
         except aiomysql.Error as e:
             logger.critical(f"[warn] Erreur DB : {e}", exc_info=True)
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
-
-        channel = await get_modo_channel(self.bot, interaction.guild)
-        await apply_warn_sanction(interaction.guild, membre, channel, warn_count)
-
-        await interaction.followup.send(
-            "Le membre vient d'être averti en MP, merci !",
-            ephemeral=True
-        )
 
         embed = discord.Embed(
             title="Tu viens d'être averti",
@@ -639,14 +787,30 @@ class Warn(commands.Cog):
         )
         embed.set_footer(text=f"ID du warn : {warn_id}")
 
+        # MP envoyé AVANT la sanction : un ban (10e warn) retire tout serveur en
+        # commun, et le MP de l'avertissement (avec son bouton de contestation)
+        # ne pouvait alors plus être envoyé.
+        mp_envoye = True
         try:
-            await membre.send(embed=embed, view=ContestationView())
-        except discord.Forbidden:
-            pass
+            await membre.send(embed=embed, view=copie_vue(ContestationView, None, set()))
+        except discord.HTTPException:
+            mp_envoye = False
+
+        channel = await get_modo_channel(self.bot, guild)
+        await apply_warn_sanction(guild, membre, channel, warn_count)
+
+        message = f"✅ {membre.mention} a reçu l'avertissement #{warn_id} ({warn_count} en cours)."
+        if not mp_envoye:
+            message += "\n⚠️ Ses MP sont fermés : il n'a pas été prévenu en message privé."
+        await interaction.followup.send(message, ephemeral=True)
 
     @app_commands.command(name="warns", description="Affiche l'historique des avertissements d'un membre")
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_messages=True)
-    async def warns(self, interaction: discord.Interaction, user: discord.Member):
+    # discord.User (et non Member) : l'historique d'un membre parti du serveur
+    # reste consultable, par exemple avant de lever un ban.
+    async def warns(self, interaction: discord.Interaction, user: discord.User):
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -708,8 +872,10 @@ class Warn(commands.Cog):
 
     @app_commands.command(name="unwarn", description="Retire un avertissement précis (voir son id via /warns)")
     @app_commands.describe(warn_id="Identifiant de l'avertissement à retirer (visible via /warns)")
+    @app_commands.default_permissions(manage_messages=True)
+    @app_commands.guild_only()
     @app_commands.checks.has_permissions(manage_messages=True)
-    async def unwarn(self, interaction: discord.Interaction, warn_id: int):
+    async def unwarn(self, interaction: discord.Interaction, warn_id: app_commands.Range[int, 1, 2_147_483_647]):
         await interaction.response.defer(ephemeral=True)
 
         try:
@@ -718,12 +884,23 @@ class Warn(commands.Cog):
                     await c.execute("SELECT user_id FROM warns WHERE id = %s", (warn_id,))
                     row = await c.fetchone()
 
-                if row is None:
-                    await interaction.followup.send("❌ Avertissement introuvable (déjà retiré ou expiré ?).", ephemeral=True)
-                    return
+            if row is None:
+                await interaction.followup.send("❌ Avertissement introuvable (déjà retiré ou expiré ?).", ephemeral=True)
+                return
 
-                (user_id,) = row
+            (user_id,) = row
+            if user_id == interaction.user.id and not est_owner(interaction.user.id):
+                await interaction.followup.send(
+                    "❌ Tu ne peux pas retirer tes propres avertissements : demande à un autre membre du staff.",
+                    ephemeral=True
+                )
+                return
 
+            # Nouvelle transaction : dans celle de la lecture, un second /unwarn
+            # simultané lisait la ligne avant la suppression du premier, et son
+            # DELETE échouait alors en erreur 1020 (« Record has changed since
+            # last read », MariaDB 11.6+) au lieu de simplement ne rien retirer.
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     # Réclame le warn de façon atomique avant de décrémenter le
                     # compteur (même principe que
@@ -732,7 +909,7 @@ class Warn(commands.Cog):
                     # pendant que check_warn_expirations fait expirer ce warn, un
                     # seul des deux DELETE obtient rowcount == 1 et décrémente
                     # réellement le compteur.
-                    await c.execute("DELETE FROM warns WHERE id = %s", (warn_id,))
+                    await c.execute("DELETE FROM warns WHERE id = %s AND user_id = %s", (warn_id, user_id))
                     gagne = c.rowcount == 1
 
                 if gagne:

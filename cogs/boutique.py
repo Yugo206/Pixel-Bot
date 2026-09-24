@@ -208,7 +208,7 @@ async def _proposer_achat(interaction: discord.Interaction, item_name: str) -> N
         elif possede and fin_achat is not None:
             embed.add_field(name="♾️ Permanent", value="Ton rôle temporaire actuel ne te sera plus retiré.")
 
-    view = ConfirmationAchatView((name, price, item_type, valeur, duration))
+    view = ConfirmationAchatView((name, price, item_type, valeur, duration), auteur=membre.id)
     view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 
@@ -401,7 +401,17 @@ async def _effectuer_achat(membre: discord.Member, objet: tuple) -> str:
             logger.critical(f"Erreur SQL achat : {e}", exc_info=True)
             return "❌ Une erreur est survenue avec la base de données."
         except discord.HTTPException as e:
-            return f"❌ Erreur lors de l'achat : {e}"
+            # Seule étape Discord de la transaction : l'attribution du rôle (ou
+            # la relecture du membre). Tout le reste a été annulé avec elle.
+            logger.warning(f"[achat] Achat de {objet[0]} annulé pour user={membre.id} : {e}")
+            if isinstance(e, discord.Forbidden):
+                return (
+                    "❌ Je n'ai pas la permission de te donner ce rôle : achat annulé, rien n'a été "
+                    "débité. Préviens un membre du staff."
+                )
+            if isinstance(e, discord.NotFound):
+                return "❌ Ce rôle (ou ton compte) est introuvable sur le serveur : achat annulé, rien n'a été débité."
+            return "❌ Discord n'a pas pu t'attribuer le rôle : achat annulé, rien n'a été débité. Réessaie dans un instant."
 
     if succes and objet[2] == 3:
         # Écriture SQL directe sur xp en dehors du cache (utils/cache.py) :
@@ -415,8 +425,8 @@ async def _effectuer_achat(membre: discord.Member, objet: tuple) -> str:
 class ConfirmationAchatView(TimedView):
     """Demande de confirmation envoyée par _proposer_achat. Message éphémère :
     seul le membre qui a choisi l'objet la voit et peut cliquer."""
-    def __init__(self, objet: tuple):
-        super().__init__()
+    def __init__(self, objet: tuple, *, auteur: int):
+        super().__init__(auteur=auteur)
         # (name, price, type, valeur, duration) tels qu'affichés au membre :
         # l'achat est annulé au clic sur Confirmer si l'objet ne correspond plus.
         self.objet = objet
@@ -513,19 +523,23 @@ class AchatSelect(discord.ui.Select):
 
 
 class BoutiqueView(TimedView):
-    def __init__(self, items):
-        super().__init__()
+    """Select d'achat de /boutique. Réservé à qui a ouvert la boutique : le
+    message est public, et sans ça n'importe quel membre du salon pouvait
+    acheter depuis la boutique d'un autre."""
+    def __init__(self, items, *, auteur: int):
+        super().__init__(auteur=auteur)
         self.add_item(AchatSelect(items))
 
 
-async def build_boutique_display() -> tuple[discord.Embed, discord.ui.View]:
-    """Construit l'embed + le select d'achat de /boutique. Extrait de
+async def build_boutique_display(auteur: int) -> tuple[discord.Embed, discord.ui.View | None]:
+    """Construit l'embed + le select d'achat de /boutique pour le membre
+    `auteur`, seul à pouvoir utiliser le select. Extrait de
     BoutiqueCog.boutique() pour être réutilisable depuis le bouton "🛒 Boutique"
     attaché à /profil (voir ProfilActionsView dans cogs/profile.py), sans dupliquer
-    la requête ni la mise en forme."""
+    la requête ni la mise en forme. Vue None si la boutique n'a pas pu être lue :
+    afficher « Boutique vide » sur une erreur de base de données serait trompeur."""
     embed = discord.Embed(title="🛍 Boutique", color=discord.Color.green())
 
-    items = []
     try:
         async with connexion() as conn:
             async with conn.cursor() as cursor:
@@ -535,6 +549,9 @@ async def build_boutique_display() -> tuple[discord.Embed, discord.ui.View]:
                 items = await cursor.fetchall()
     except aiomysql.Error as e:
         logger.critical(f"Erreur SQL boutique : {e}", exc_info=True)
+        embed.description = "❌ La boutique est momentanément indisponible, réessaie dans un instant."
+        embed.color = discord.Color.red()
+        return embed, None
 
     if len(items) > MAX_OBJETS_BOUTIQUE:
         logger.warning(
@@ -555,7 +572,7 @@ async def build_boutique_display() -> tuple[discord.Embed, discord.ui.View]:
 
             embed.add_field(name=name, value=desc, inline=False)
 
-    return embed, BoutiqueView(items)
+    return embed, BoutiqueView(items, auteur=auteur)
 
 
 async def build_inventaire_embed(user_id: int) -> discord.Embed:
@@ -710,7 +727,10 @@ class BoutiqueCog(commands.Cog):
             return
 
         await interaction.response.defer()
-        embed, view = await build_boutique_display()
+        embed, view = await build_boutique_display(interaction.user.id)
+        if view is None:
+            await interaction.followup.send(embed=embed)
+            return
         view.message = await interaction.followup.send(embed=embed, view=view)
 
 

@@ -147,6 +147,21 @@ async def increment_warn(conn, user_id: int) -> int:
     return new_warn
 
 
+async def compter_warns(conn, user_id: int) -> int:
+    """Nombre de warns réellement en cours pour user_id (table `warns`), sur la
+    connexion de l'appelant — à utiliser pour les paliers de sanction (voir
+    utils/sanctions.py) plutôt que le compteur utilisateurs.warn : ce dernier
+    est remis à zéro quand le membre quitte le serveur (la ligne `utilisateurs`
+    est supprimée, voir on_member_remove dans cogs/events.py), ce qui laissait
+    un membre repartir de 0 avertissement en quittant puis rejoignant le
+    serveur. Appelé dans la transaction qui vient d'insérer le warn, il le
+    compte déjà."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT COUNT(*) FROM warns WHERE user_id = %s", (user_id,))
+        (total,) = await cur.fetchone()
+    return int(total)
+
+
 async def decrement_warn(conn, user_id: int) -> int:
     """Décrémente utilisateurs.warn de 1 pour user_id (sans descendre sous 0) et
     renvoie la nouvelle valeur, de façon atomique — même principe qu'increment_warn

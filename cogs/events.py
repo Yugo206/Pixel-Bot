@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from discord.ext import commands
 import aiomysql
@@ -7,13 +8,14 @@ import discord
 from cogs.tickets import TicketCreateView, FermerView, ModoView, AvisView, PartenariatCommencerView, ConditionsPartenariatView, MentionPartenariatView, SatisfactionView, ConfirmationClotureView
 from cogs.trade import TradeView, TradePanelView
 from cogs.warn import RefuseroracceptercontestationView, ContestationView
-from cogs.recrutement import ConditionsSelect, FormulaireBouton, Accepterview
+from cogs.recrutement import ConditionsSelect, FormulaireBouton, Accepterview, DecisionPeriodeTest
 from dotenv import load_dotenv
 load_dotenv()
 
 from utils.database import connexion
 from utils import cache
 from utils.config import get_config
+from utils.autorisations import serveur_autorise
 
 logger = logging.getLogger(__name__)
 
@@ -78,11 +80,18 @@ class Events(commands.Cog):
             self.bot.add_view(RefuseroracceptercontestationView())
             self.bot.add_view(ContestationView())
             self.bot.add_view(Accepterview())
+            # Boutons de fin de période de test (voir staff_test_watcher dans
+            # start.py) : membre et rôle portés par le custom_id.
+            self.bot.add_dynamic_items(DecisionPeriodeTest)
         except Exception as e:
             logger.error(f"[on_ready] Erreur lors de l'enregistrement des vues persistantes : {e}")
 
     @commands.Cog.listener()
     async def on_member_remove(self, member):
+        # Uniquement pour le serveur configuré : quitter un autre serveur où se
+        # trouve aussi le bot ne doit pas effacer l'argent et l'XP du membre ici.
+        if not serveur_autorise(member.guild.id):
+            return
         try:
             async with connexion() as conn:
                 async with conn.cursor() as cursor:
@@ -90,49 +99,57 @@ class Events(commands.Cog):
                 await conn.commit()
             cache.invalidate_xp(member.id)
         except aiomysql.Error as e:
-            channel_id = get_config("CHANNEL_COMMANDE_ID")
-            if not channel_id:
-                logger.critical(f"Erreur de base de donnée quand {member.id} a quitté le serveur : {e}", exc_info=True)
-                return
-            guild = member.guild
-            channel = guild.get_channel(int(channel_id))
-            if channel:
-                await channel.send(f"Erreur de base de donnée quand **{member.id}** a quitté le serveur : {e}")
+            # Journalisé (alerte MP à l'owner, voir utils/error_handler.py) plutôt
+            # que posté dans le salon des commandes, visible de tous les membres.
+            logger.critical(f"Erreur de base de donnée quand {member.id} a quitté le serveur : {e}", exc_info=True)
 
     @commands.Cog.listener()
     async def on_message(self, message):
         if message.author.bot:
             return
 
-        # Réagit quand le bot est mentionné dans un salon du serveur.
-        if message.guild is not None and self.bot.user in message.mentions:
-            await message.reply(random.choice(MENTION_RESPONSES), mention_author=False)
+        # Ni XP, ni réponse, ni suivi de ticket hors du serveur configuré (MP
+        # compris, où rien de tout ça ne s'applique).
+        if message.guild is None or not serveur_autorise(message.guild.id):
+            return
+
+        # Réagit quand le bot est mentionné dans le texte du message. Pas via
+        # message.mentions : il contient aussi l'auteur du message auquel on
+        # répond, et le bot répondait alors à chaque réponse faite à l'un de ses
+        # messages (annonce de niveau, ticket...).
+        if re.search(rf"<@!?{self.bot.user.id}>", message.content):
+            try:
+                await message.reply(random.choice(MENTION_RESPONSES), mention_author=False)
+            except discord.HTTPException:
+                pass
 
         if message.channel.type == discord.ChannelType.private_thread:
-            async with connexion() as conn:
-                async with conn.cursor() as cur:
-                    await cur.execute("SELECT membre_id FROM ticket WHERE thread_id = %s", (message.channel.id,))
-                    rppw = await cur.fetchone()
-                    if rppw is not None and message.author.id == rppw[0]:
+            # Activité du membre dans son ticket : repousse la fermeture pour
+            # inactivité (voir ticket_watcher dans start.py). Un seul UPDATE
+            # conditionné à l'auteur du ticket (un modérateur qui écrit ne compte
+            # pas comme une réponse du membre).
+            try:
+                async with connexion() as conn:
+                    async with conn.cursor() as cur:
                         await cur.execute(
-                            "UPDATE ticket SET last_message = %s WHERE thread_id = %s",
-                            (int(time.time()), message.channel.id)
+                            "UPDATE ticket SET last_message = %s, warn_12h = NULL "
+                            "WHERE thread_id = %s AND membre_id = %s AND statut != 3",
+                            (int(time.time()), message.channel.id, message.author.id)
                         )
-                        await cur.execute("SELECT warn_12h FROM ticket WHERE thread_id = %s", (message.channel.id,))
-                        row = await cur.fetchone()
-                        if row is not None and row[0] is not None:
-                            await cur.execute(
-                                "UPDATE ticket SET warn_12h = NULL WHERE thread_id = %s",
-                                (message.channel.id,)
-                            )
-                await conn.commit()
+                    await conn.commit()
+            except aiomysql.Error as e:
+                logger.error(f"[on_message] Erreur DB au suivi du ticket {message.channel.id} : {e}")
 
         # L'économie (argent/XP) ne s'applique qu'aux messages envoyés sur le serveur.
         # Lecture de l'XP actuelle via le cache mémoire (utils/cache.py) au lieu d'un
         # SELECT à chaque message : la valeur ne change qu'à un message de ce membre
         # ou à un achat en boutique, pas besoin de la relire en base à chaque fois.
         if message.guild is not None:
-            xp_actuel = await cache.get_xp(message.author.id)
+            try:
+                xp_actuel = await cache.get_xp(message.author.id)
+            except aiomysql.Error as e:
+                logger.error(f"[on_message] Erreur DB en lisant l'XP de {message.author.id} : {e}")
+                return
             level_avant = self.get_level(xp_actuel)
 
             xp_gain = random.randint(1, 10)
@@ -173,7 +190,7 @@ class Events(commands.Cog):
                 if channel:
                     try:
                         await channel.send(
-                            f"🎉 {message.author.mention} est passé **niveau {level_apres}** avec {xp_gain} XP !"
+                            f"🎉 {message.author.mention} vient d'atteindre le **niveau {level_apres}** !"
                         )
                     except discord.HTTPException as e:
                         logger.warning(f"[on_message] Impossible d'annoncer le niveau de {message.author.id} : {e}")
@@ -186,12 +203,15 @@ class Events(commands.Cog):
         # L'accueil (questions/rôles) passe désormais par l'onboarding natif Discord
         # (Server Settings > Onboarding) — plus d'envoi de MP ici, qui échouait
         # silencieusement pour les membres ayant fermé leurs messages privés.
-        if member.id in BLACKLIST:
+        if member.id in BLACKLIST and serveur_autorise(member.guild.id):
             try:
                 await member.send("Tu as été blacklisté du serveur. Kick immédiat.")
-            except discord.Forbidden:
+            except discord.HTTPException:
                 pass
-            await member.kick(reason="Membre blacklisté")
+            try:
+                await member.kick(reason="Membre blacklisté")
+            except discord.HTTPException as e:
+                logger.error(f"[on_member_join] Impossible d'expulser le membre blacklisté {member.id} : {e}")
 
 
 async def setup(bot):

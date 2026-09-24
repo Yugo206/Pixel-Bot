@@ -200,8 +200,8 @@ class ArchiveSelect(discord.ui.Select):
 
 
 class ArchiveView(TimedView):
-    def __init__(self, options: list[discord.SelectOption]):
-        super().__init__()
+    def __init__(self, options: list[discord.SelectOption], *, auteur: int):
+        super().__init__(auteur=auteur)
         self.add_item(ArchiveSelect(options))
 
 
@@ -312,7 +312,7 @@ class Archive(commands.Cog):
             ))
         embed.set_footer(text=f"{len(rows)} ticket(s) fermé(s), les plus récents d'abord ({NB_ARCHIVES} au maximum)")
 
-        view = ArchiveView(options)
+        view = ArchiveView(options, auteur=interaction.user.id)
         view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
 

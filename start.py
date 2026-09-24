@@ -24,7 +24,10 @@ from utils.error_handler import DiscordErrorHandler
 from utils.setupdatabase import init_db
 from utils.config import load_config, get_config, missing_keys
 from cogs.tickets import demander_confirmation_moderateur
+from cogs.recrutement import vue_fin_periode_test
 from utils.transcript import archive_a_jour, archiver_ticket
+from utils.autorisations import serveur_principal, verifier_commande
+from utils.sanctions import get_modo_channel
 
 Token = os.getenv("DISCORD_TOKEN")
 if not Token:
@@ -41,6 +44,18 @@ intents.members = True  # nécessaire pour on_member_join/on_member_remove et fe
 # Les laisser désactivées réduit le volume d'évènements gateway à traiter — utile
 # vu le quota RAM/CPU limité sur alwaysdata.
 
+
+class PixelTree(app_commands.CommandTree):
+    """Arbre des commandes slash avec une vérification commune à toutes les
+    commandes, faite avant la moindre action : uniquement sur le serveur
+    configuré, jamais en message privé (voir verifier_commande dans
+    utils/autorisations.py). Les vérifications propres à chaque commande
+    (permissions, propriétaire...) s'ajoutent ensuite."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await verifier_commande(interaction)
+
+
 bot = commands.Bot(
     command_prefix="!",
     intents=intents,
@@ -48,6 +63,14 @@ bot = commands.Bot(
     # (aucun on_message_edit/on_message_delete, aucun get_message) : le désactiver
     # évite de garder ~1000 objets Message en mémoire pour rien.
     max_messages=None,
+    tree_cls=PixelTree,
+    # Commandes déclarées « serveur uniquement » auprès de Discord : elles
+    # n'apparaissent plus dans les messages privés avec le bot.
+    allowed_contexts=app_commands.AppCommandContext(guild=True, dm_channel=False, private_channel=False),
+    # Aucune commande préfixée n'existe plus (tout passe par les commandes
+    # slash) : sans ça, « !help » affichait l'aide par défaut de discord.py, en
+    # anglais et vide, dans n'importe quel salon ou MP.
+    help_command=None,
 )
 
 
@@ -190,7 +213,12 @@ async def ticket_watcher():
                     await conn.commit()
 
                 if gagne:
-                    await thread.send("⚠️ Ticket inactif depuis 24h.")
+                    # Dit aussi ce qui va se passer : l'ancien « Ticket inactif
+                    # depuis 24h. » laissait le membre deviner la suite.
+                    await thread.send(
+                        "⚠️ Ticket inactif depuis 24h : sans réponse de ta part, il sera fermé "
+                        "automatiquement dans 48h."
+                    )
 
             # ---------------------------------------------------------
             # 🔒 FERMETURE AUTOMATIQUE 48H APRÈS L'AVERTISSEMENT
@@ -230,74 +258,108 @@ async def ticket_watcher():
 # ---------------------------------------------------------
 # 👮 SURVEILLANCE DES PÉRIODES DE TEST STAFF
 # Vérifie si les 7 jours de test d'un staff sont terminés.
-# Si oui, le bot envoie un message demandant si le membre
-# doit rester staff ou être retiré du staff.
+# Si oui, le bot envoie un message dans le salon modération avec
+# deux boutons : garder le membre dans le staff, ou lui retirer
+# son rôle (voir DecisionPeriodeTest dans cogs/recrutement.py).
 # ---------------------------------------------------------
+async def _remettre_periode_test(user_id: int, role_id: int, end_time: int) -> None:
+    """Remet en attente une fin de période de test déjà réservée (ligne
+    supprimée) mais pas encore annoncée au staff : elle sera reprise au
+    prochain passage de staff_test_watcher plutôt que perdue."""
+    async with connexion() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "INSERT INTO temp_roles (user_id, role_id, end_time, origin) VALUES (%s, %s, %s, 'staff_test')",
+                (user_id, role_id, end_time)
+            )
+        await conn.commit()
+
+
 @tasks.loop(minutes=30)
 async def staff_test_watcher():
     await bot.wait_until_ready()
 
     now = int(time.time())
 
-    guild_id = get_config("GUILD_ID")
-    channel_id = get_config("CHANNEL_MODO_ID")
+    # Même garde-fou que ticket_watcher : une exception qui sortirait de la
+    # boucle l'arrêterait définitivement, silencieusement, jusqu'au redémarrage.
+    try:
+        async with connexion() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'staff_test' AND end_time <= %s",
+                    (now,)
+                )
+                rows = await cur.fetchall()
+    except Exception as e:
+        logger.error(f"[staff_test_watcher] Erreur lors de la liste des périodes de test : {e}")
+        return
 
-    async with connexion() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(
-                "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'staff_test' AND end_time <= %s",
-                (now,)
-            )
-            rows = await cur.fetchall()
+    if not rows:
+        return
 
-            for row_id, user_id, role_id in rows:
-                try:
-                    if not guild_id:
-                        continue
+    guild = await serveur_principal(bot)
+    staff_channel = await get_modo_channel(bot)
+    if guild is None or staff_channel is None:
+        # Lignes gardées : elles seront traitées une fois la configuration corrigée.
+        logger.error(
+            "[staff_test_watcher] Serveur (GUILD_ID) ou salon de modération (CHANNEL_MODO_ID) introuvable : "
+            f"{len(rows)} fin(s) de période de test en attente."
+        )
+        return
 
-                    guild = bot.get_guild(int(guild_id))
-                    if guild is None:
-                        guild = await bot.fetch_guild(int(guild_id))
-
-                    member = guild.get_member(user_id)
-                    if member is None:
-                        try:
-                            member = await guild.fetch_member(user_id)
-                        except discord.NotFound:
-                            await cur.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
-                            continue
-
-                    if not channel_id:
-                        continue
-
-                    staff_channel = bot.get_channel(int(channel_id))
-                    if staff_channel is None:
-                        staff_channel = await bot.fetch_channel(int(channel_id))
-
-                    if not staff_channel:
-                        continue
-
-                    embed = discord.Embed(
-                        title="Fin de période de test",
-                        description=f"La période de test de {member.mention} est terminée.\n Voulez‑vous **le garder dans le staff** ou **retirer son rôle** ?",
-                        color=discord.Color.orange()
-                    )
-
-                    await staff_channel.send(embed=embed)
-
-                    # On supprime l'entrée pour éviter de redemander
+    for row_id, user_id, role_id in rows:
+        try:
+            # Réservation de la ligne avant l'envoi (DELETE + rowcount) : deux
+            # passages simultanés (ou deux process du bot) n'envoient jamais deux
+            # fois la même question.
+            async with connexion() as conn:
+                async with conn.cursor() as cur:
                     await cur.execute("DELETE FROM temp_roles WHERE id = %s", (row_id,))
-                except Exception as e:
-                    logger.error(f"[staff_test_watcher] Erreur pour l'utilisateur {user_id} : {e}")
+                    gagne = cur.rowcount == 1
+                await conn.commit()
+            if not gagne:
+                continue
 
-        await conn.commit()
+            member = guild.get_member(user_id)
+            if member is None:
+                try:
+                    member = await guild.fetch_member(user_id)
+                except discord.NotFound:
+                    continue
+                except discord.HTTPException:
+                    # Erreur passagère de l'API : même remise en attente qu'un
+                    # échec d'envoi (voir plus bas), la ligne étant déjà retirée.
+                    await _remettre_periode_test(user_id, role_id, now)
+                    raise
+
+            # Rôle déjà retiré à la main (ou supprimé) : plus rien à décider.
+            if member.get_role(role_id) is None:
+                continue
+
+            embed = discord.Embed(
+                title="Fin de période de test",
+                description=f"La période de test de {member.mention} est terminée.\nVoulez-vous **le garder dans le staff** ou **retirer son rôle** ?",
+                color=discord.Color.orange()
+            )
+            embed.set_footer(text=f"ID du membre : {user_id}")
+
+            try:
+                await staff_channel.send(embed=embed, view=vue_fin_periode_test(user_id, role_id))
+            except discord.HTTPException:
+                # Remise en attente pour le prochain passage plutôt qu'une
+                # décision perdue.
+                await _remettre_periode_test(user_id, role_id, now)
+                raise
+        except Exception as e:
+            logger.error(f"[staff_test_watcher] Erreur pour l'utilisateur {user_id} : {e}")
 
 
 @tasks.loop(seconds=60)
 async def cycle_status():
     activities = [
         discord.Game("Anime Pixel Party"),
-        discord.Activity(type=discord.ActivityType.watching, name="La version 2.0.0"),
+        discord.Activity(type=discord.ActivityType.watching, name="La version 2.1.0"),
         discord.Activity(type=discord.ActivityType.listening, name="Les membres de Pixel Party"),
     ]
 
@@ -309,10 +371,19 @@ async def cycle_status():
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.MissingPermissions):
         message = "❌ Tu n'as pas la permission d'utiliser cette commande."
+    elif isinstance(error, app_commands.BotMissingPermissions):
+        message = "❌ Il me manque des permissions sur ce serveur pour exécuter cette commande."
+    elif isinstance(error, app_commands.NoPrivateMessage):
+        message = "❌ Cette commande n'est utilisable que sur le serveur."
     elif isinstance(error, app_commands.CommandOnCooldown):
         message = f"⏳ Cette commande est en cooldown, réessaie dans {error.retry_after:.0f}s."
+    elif isinstance(error, app_commands.CheckFailure):
+        message = "❌ Tu n'es pas autorisé à utiliser cette commande."
     else:
-        logger.error(f"[Erreur commande] /{interaction.command.name if interaction.command else '?'} : {error}")
+        logger.error(
+            f"[Erreur commande] /{interaction.command.name if interaction.command else '?'} : {error}",
+            exc_info=getattr(error, "original", error),
+        )
         message = "❌ Une erreur inattendue est survenue en exécutant cette commande."
 
     try:

@@ -74,7 +74,7 @@ async def apply_warn_sanction(guild, membre: discord.Member, channel, warn_count
         )
         try:
             await membre.send(embed=embed)
-        except discord.Forbidden:
+        except discord.HTTPException:  # MP fermés : la sanction s'applique quand même
             pass
 
     elif sanction["type"] == "ban":
@@ -89,7 +89,7 @@ async def apply_warn_sanction(guild, membre: discord.Member, channel, warn_count
         embed.add_field(name="Temps", value=sanction["label"], inline=False)
         try:
             await membre.send(embed=embed)
-        except discord.Forbidden:
+        except discord.HTTPException:  # MP fermés : la sanction s'applique quand même
             pass
 
         try:
