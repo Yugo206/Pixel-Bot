@@ -20,12 +20,16 @@ class TimedView(discord.ui.View):
     message renvoyé par interaction.followup.send(), ou obtenu via
     interaction.original_response() quand la vue accompagne
     interaction.response.send_message() — jamais interaction.message, qui ne
-    peut pas être édité si le message est éphémère). Les select de la vue
-    peuvent aussi réutiliser self.view.message.edit(...) pour se réinitialiser
-    après un choix (voir AchatSelect dans cogs/boutique.py, ProfilActionsSelect
-    et DestinataireSelect dans cogs/profile.py) : sans ce reset, Discord
-    affiche l'option choisie comme sélectionnée en permanence et un même choix
-    ne peut pas être refait tant que le message n'a pas été réédité."""
+    peut pas être édité si le message est éphémère).
+
+    Les select de la vue doivent se réinitialiser après un choix : sans ça,
+    Discord affiche l'option choisie comme sélectionnée en permanence et un même
+    choix ne peut pas être refait tant que le message n'a pas été réédité. Le
+    plus sûr est de répondre au choix par interaction.response.edit_message(
+    view=self.view) (voir AchatSelect dans cogs/boutique.py, ProfilActionsSelect
+    dans cogs/profile.py) : le jeton du clic est neuf. Quand la réponse doit
+    être autre chose (une modale, voir DestinataireSelect dans cogs/profile.py),
+    rafraichir() réédite self.message à la place."""
 
     def __init__(self, *, timeout: float = 300):
         super().__init__(timeout=timeout)
@@ -34,6 +38,16 @@ class TimedView(discord.ui.View):
     async def on_timeout(self) -> None:
         for item in self.children:
             item.disabled = True
+        await self.rafraichir()
+
+    async def rafraichir(self) -> None:
+        """Réédite self.message avec la vue dans son état actuel (composants
+        désactivés à l'expiration, choix d'un select vidé — voir plus haut).
+        Sans effet si ce n'est plus possible : le jeton qui permet d'éditer un
+        message envoyé en réponse à une interaction expire 15 min après l'envoi,
+        alors que chaque clic repousse l'expiration de la vue — l'erreur
+        remonterait sinon jusqu'au propriétaire en MP (voir
+        utils/error_handler.py)."""
         if self.message is None:
             return
         try:
