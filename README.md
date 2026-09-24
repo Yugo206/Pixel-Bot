@@ -133,6 +133,56 @@ le bot vérifie que chaque clé du tableau ci-dessus est bien présente dans `co
 tout ce qui manque, pour éviter qu'une fonctionnalité reste silencieusement désactivée
 sans que personne ne le remarque.
 
+### Boutique : limite d'achats par jour
+
+Chaque objet de la table `shop` a une colonne `limite_jour` : nombre d'achats autorisés
+par membre et par jour pour cet objet (**5 par défaut**, y compris pour les objets déjà
+en base). `NULL` = illimité, `0` = objet visible mais plus achetable. Le jour se termine
+à minuit, heure de Paris. Les compteurs sont dans la table `achats_jour`, purgée
+automatiquement des jours passés.
+
+```sql
+UPDATE shop SET limite_jour = 1 WHERE name = 'Mon objet';   -- édition limitée
+UPDATE shop SET limite_jour = NULL WHERE name = 'Mon objet'; -- illimité
+```
+
+Chaque achat demande une confirmation (boutons « Confirmer » / « Annuler ») pour éviter
+les achats accidentels. `/inventaire` et `/classement` n'existent plus en commandes
+séparées : ils sont dans le menu « Actions » de `/profil`, avec l'historique (20
+dernières transactions) et le don.
+
+### Archives des tickets et statistiques staff
+
+À chaque fermeture de ticket (manuelle ou automatique), le bot enregistre une
+transcription HTML du salon dans la table `ticket_archives`. Elle est conservée même
+après la suppression du ticket. Les pièces jointes (images, fichiers) sont intégrées
+au fichier, dans la limite de 5 Mo par ticket ; les avatars et emojis sont chargés
+depuis Internet à l'ouverture.
+
+- `/archive` (modérateurs uniquement) : les 20 derniers tickets que le modérateur a pris
+  en charge ou auxquels il a participé, puis envoi de la transcription dans un message
+  visible de lui seul (fichier `.html` à ouvrir dans un navigateur). L'owner (`OWNER_ID`) voit tous les
+  tickets, et peut filtrer sur un modérateur avec le paramètre `moderateur`.
+- `/stats-staff` (modérateurs uniquement) : nombre de tickets traités et temps moyen
+  avant le premier message d'un modérateur, avec le classement. Calculé à partir des
+  archives : seuls les tickets fermés depuis la mise en place des archives sont comptés
+  (plus ceux fermés dans les 24 h qui la précèdent, archivés avant leur suppression).
+
+*Astuce : ces deux commandes sont masquées aux membres sans la permission « Gérer les
+messages ». Si vos modérateurs n'ont que le rôle `ROLE_MODO_ID`, autorisez ce rôle
+dans Paramètres du serveur > Intégrations > Pixel Bot.*
+
+### Expiration des warns
+
+Un warn expire automatiquement **30 jours** après avoir été donné, en commençant par
+le plus ancien, et un membre ne peut perdre qu'**un seul warn tous les 30 jours**
+(ex : 3 warns reçus le même jour sont retirés à J+30, J+60 et J+90). Le membre est
+prévenu en MP. La vérification a lieu toutes les heures et s'applique aussi aux warns
+déjà présents en base : au premier démarrage, un membre perd au plus un warn (le plus
+ancien, s'il a plus de 30 jours), puis un tous les 30 jours. Une expiration ne
+déclenche jamais de sanction. La date de la dernière expiration de chaque membre est
+dans la table `warn_expirations`.
+
 ## 5) Terminé !
 
 *Astuce : Pensez a faire git pull sur la branche `main` pour obtenir les nouvelles fonctionnalités 
