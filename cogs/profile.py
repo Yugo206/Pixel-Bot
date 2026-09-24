@@ -8,19 +8,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-from utils.database import get_pool
+from utils.database import connexion
 from utils import cache
 from utils.config import get_config
 from utils.profile_card import generate_profile_card
 from utils.transactions import log_transaction
 from utils.views import TimedView
-from cogs.boutique import build_boutique_display
+from cogs.boutique import build_boutique_display, build_inventaire_embed
 
 logger = logging.getLogger(__name__)
 
-# Colonnes autorisées pour /classement : whitelist revalidée juste avant l'interpolation
-# SQL (même principe que ajouter_rarete dans utils/database.py), même si les choix sont
-# déjà imposés côté client par app_commands.choices.
+# Colonnes autorisées pour le classement (voir _construire_classement) : whitelist
+# revalidée juste avant l'interpolation SQL (même principe que ajouter_rarete dans
+# utils/database.py), même si les seules valeurs possibles viennent déjà des
+# boutons de ClassementView.
 COLONNES_CLASSEMENT = {"argent", "xp"}
 
 # Récompense et délai de /daily, configurables via la table `config` (voir
@@ -94,9 +95,8 @@ async def _effectuer_don(interaction: discord.Interaction, destinataire: discord
         await interaction.followup.send("❌ Impossible de donner de l'argent à un bot.", ephemeral=True)
         return
 
-    pool = get_pool()
     try:
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as cursor:
                 # Déduction atomique et conditionnelle (même principe que l'achat en
                 # boutique, voir AchatSelect.callback dans cogs/boutique.py) : n'a
@@ -159,8 +159,7 @@ class JeuModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as cursor:
                 for cle, champ in self.champs:
                     valeur = champ.value.strip() if champ.value else ""
@@ -188,8 +187,10 @@ class JeuButton(discord.ui.Button):
 
     async def callback(self, interaction: discord.Interaction):
         cles = [cle for cle, _ in self.jeu["questions"]]
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        # connexion() : ces valeurs pré-remplissent la modale et sont réécrites
+        # telles quelles à la validation. Lues sur une image figée, elles
+        # remettaient en place une réponse que le membre venait de changer.
+        async with connexion() as conn:
             async with conn.cursor() as cursor:
                 placeholders = ",".join(["%s"] * len(cles))
                 await cursor.execute(
@@ -234,7 +235,8 @@ class DestinataireSelect(discord.ui.UserSelect):
         # Réinitialise le select (voir TimedView) : sans ça, Discord garde le
         # membre choisi affiché comme sélectionné et le même choix ne peut pas
         # être refait (ex: modale annulée, on veut retenter avec le même membre).
-        await self.view.message.edit(view=self.view)
+        # Via rafraichir() : la modale occupe déjà la réponse à ce clic.
+        await self.view.rafraichir()
 
 
 class DestinataireView(TimedView):
@@ -243,10 +245,129 @@ class DestinataireView(TimedView):
         self.add_item(DestinataireSelect())
 
 
+async def _construire_historique(user_id: int) -> discord.Embed:
+    """Embed des 20 dernières transactions de `user_id` (select "Actions" de
+    /profil). Laisse remonter aiomysql.Error, signalée par l'appelant."""
+    async with connexion() as conn:
+        async with conn.cursor() as cursor:
+            # LIMIT 20 : voir table `transactions` (utils/setupdatabase.py) —
+            # un pur journal, jamais relu pour recalculer un solde.
+            await cursor.execute(
+                "SELECT type, montant, detail, created_at FROM transactions "
+                "WHERE user_id = %s ORDER BY created_at DESC, id DESC LIMIT 20",
+                (user_id,)
+            )
+            rows = await cursor.fetchall()
+
+    embed = discord.Embed(title="📜 Historique des transactions", color=discord.Color.green())
+    if not rows:
+        embed.description = "Aucune transaction pour l'instant."
+        return embed
+
+    lignes = []
+    for _type, montant, detail, created_at in rows:
+        signe = "+" if montant > 0 else ""
+        # Détail tronqué à 150 caractères : au plus ~40 caractères fixes par ligne
+        # (date, montant, séparateurs) + 150 + le saut de ligne, soit ≤ 3800 pour
+        # 20 lignes — sous la limite Discord de 4096 pour une description d'embed,
+        # même si un type de transaction journalise un détail long (la colonne
+        # en accepte 255).
+        detail = detail or ""
+        if len(detail) > 150:
+            detail = detail[:149] + "…"
+        lignes.append(f"<t:{created_at}:d> — **{signe}{montant} €** — {detail}")
+    embed.description = "\n".join(lignes)
+    return embed
+
+
+async def _construire_classement(colonne: str, user_id: int) -> discord.Embed:
+    """Embed du top 10 par `colonne` (argent ou xp), suivi de la position de
+    `user_id` s'il n'y figure pas. Laisse remonter aiomysql.Error, signalée par
+    l'appelant."""
+    if colonne not in COLONNES_CLASSEMENT:
+        raise ValueError(f"Colonne de classement non autorisée : {colonne}")
+
+    async with connexion() as conn:
+        async with conn.cursor() as cursor:
+            # colonne : validée juste au-dessus contre COLONNES_CLASSEMENT, sûre à interpoler.
+            await cursor.execute(
+                f"SELECT user_id, {colonne} FROM utilisateurs ORDER BY {colonne} DESC LIMIT 10"
+            )
+            rows = await cursor.fetchall()
+
+            position = None
+            if rows and user_id not in {uid for uid, _ in rows}:
+                await cursor.execute(f"SELECT {colonne} FROM utilisateurs WHERE user_id = %s", (user_id,))
+                row = await cursor.fetchone()
+                valeur_membre = row[0] if row and row[0] is not None else 0
+                # Même calcul que le rang XP de /profil : les ex æquo partagent la
+                # même position.
+                await cursor.execute(
+                    f"SELECT COUNT(*) + 1 FROM utilisateurs WHERE {colonne} > %s", (valeur_membre,)
+                )
+                (position,) = await cursor.fetchone()
+
+    if colonne == "argent":
+        titre, unite = "💰 Classement — Argent", "€"
+    else:
+        titre, unite = "✨ Classement — Expérience", "XP"
+
+    if not rows:
+        return discord.Embed(title=titre, description="Personne à classer pour le moment.", color=discord.Color.green())
+
+    medailles = ["🥇", "🥈", "🥉"]
+    lignes = []
+    for i, (uid, valeur) in enumerate(rows):
+        rang = medailles[i] if i < len(medailles) else f"**{i + 1}.**"
+        lignes.append(f"{rang} <@{uid}> — {valeur or 0} {unite}")
+    if position is not None:
+        lignes.append(f"\n📍 Ta position : **{position}e** — {valeur_membre} {unite}")
+    return discord.Embed(title=titre, description="\n".join(lignes), color=discord.Color.green())
+
+
+class ClassementView(TimedView):
+    """Boutons du classement (select "Actions" de /profil) : basculent entre
+    argent et XP en rééditant le même message, le bouton du classement affiché
+    étant désactivé."""
+    def __init__(self, colonne: str):
+        super().__init__()
+        self._marquer_actif(colonne)
+
+    def _marquer_actif(self, colonne: str) -> None:
+        self.bouton_argent.disabled = colonne == "argent"
+        self.bouton_xp.disabled = colonne == "xp"
+
+    async def _basculer(self, interaction: discord.Interaction, colonne: str) -> None:
+        await interaction.response.defer()
+        try:
+            embed = await _construire_classement(colonne, interaction.user.id)
+        except aiomysql.Error as e:
+            logger.critical(f"[classement] Erreur DB : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+            return
+        self._marquer_actif(colonne)
+        # Via le jeton de ce clic plutôt que self.message.edit() : celui qui a
+        # servi à envoyer self.message expire 15 min après l'envoi, alors que
+        # chaque clic repousse l'expiration de la vue (TimedView).
+        await interaction.edit_original_response(embed=embed, view=self)
+
+    @discord.ui.button(label="💰 Argent", style=discord.ButtonStyle.green)
+    async def bouton_argent(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._basculer(interaction, "argent")
+
+    @discord.ui.button(label="✨ XP", style=discord.ButtonStyle.blurple)
+    async def bouton_xp(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._basculer(interaction, "xp")
+
+
 class ProfilActionsSelect(discord.ui.Select):
-    """Select "Actions" attaché à /profil (historique, don). Agit toujours sur qui
-    clique (interaction.user), pas sur le propriétaire du profil affiché — même
-    principe que PersonnaliserButton/AchatSelect (cogs/boutique.py)."""
+    """Select "Actions" attaché à /profil (historique, inventaire, classement,
+    don — les deux du milieu remplacent les anciennes commandes /inventaire et
+    /classement). Agit toujours sur qui clique (interaction.user), pas sur le
+    propriétaire du profil affiché — même principe que PersonnaliserButton/
+    AchatSelect (cogs/boutique.py) : la carte /profil est publique, n'importe
+    quel membre du salon peut utiliser ce select, et chacun y consulte ses
+    propres données en éphémère."""
     def __init__(self):
         super().__init__(
             placeholder="💰 Actions",
@@ -254,70 +375,50 @@ class ProfilActionsSelect(discord.ui.Select):
             max_values=1,
             options=[
                 discord.SelectOption(label="Historique des transactions", value="historique", emoji="📜"),
+                discord.SelectOption(label="Inventaire", value="inventaire", emoji="🎒"),
+                discord.SelectOption(label="Classement", value="classement", emoji="🏆"),
                 discord.SelectOption(label="Donner de l'argent", value="donner", emoji="💸"),
             ],
             row=0,
         )
 
     async def callback(self, interaction: discord.Interaction):
-        if self.values[0] == "donner":
+        choix = self.values[0]
+        # Réinitialise d'abord ce select sur la carte /profil (voir TimedView),
+        # en guise de réponse au clic : sans ça, Discord le garde affiché sur le
+        # choix fait et le même choix ne peut pas être refait (ex: reconsulter
+        # l'historique juste après, ou redonner de l'argent une seconde fois).
+        # Le résultat suit en message éphémère (followup).
+        await interaction.response.edit_message(view=self.view)
+        if choix == "donner":
             view = DestinataireView()
-            await interaction.response.send_message(
+            view.message = await interaction.followup.send(
                 "Choisis à qui donner de l'argent :", view=view, ephemeral=True
             )
-            view.message = await interaction.original_response()
-            # Réinitialise ce select sur la carte /profil (voir TimedView) : sans
-            # ça, Discord le garde affiché sur "Donner de l'argent" et le même
-            # choix ne peut pas être refait (ex: reconsulter l'historique juste
-            # après, ou redonner de l'argent une seconde fois).
-            await self.view.message.edit(view=self.view)
             return
 
-        await interaction.response.defer(ephemeral=True)
         try:
-            pool = get_pool()
-            try:
-                async with pool.acquire() as conn:
-                    async with conn.cursor() as cursor:
-                        # LIMIT 10 : voir table `transactions` (utils/setupdatabase.py) —
-                        # un pur journal, jamais relu pour recalculer un solde.
-                        await cursor.execute(
-                            "SELECT type, montant, detail, created_at FROM transactions "
-                            "WHERE user_id = %s ORDER BY created_at DESC, id DESC LIMIT 10",
-                            (interaction.user.id,)
-                        )
-                        rows = await cursor.fetchall()
-            except aiomysql.Error as e:
-                logger.critical(f"[profil_actions] Erreur DB : {e}", exc_info=True)
-                await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
-                return
-
-            if not rows:
-                await interaction.followup.send("Aucune transaction pour l'instant.", ephemeral=True)
-                return
-
-            lignes = []
-            for _type, montant, detail, created_at in rows:
-                signe = "+" if montant > 0 else ""
-                lignes.append(f"<t:{created_at}:d> — **{signe}{montant} €** — {detail}")
-            embed = discord.Embed(
-                title="📜 Historique des transactions",
-                description="\n".join(lignes),
-                color=discord.Color.green()
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        finally:
-            # Réinitialise le select (voir TimedView) quel que soit le chemin
-            # emprunté ci-dessus (succès, erreur DB, historique vide) : sinon
-            # reconsulter l'historique une seconde fois ne redéclenche rien.
-            await self.view.message.edit(view=self.view)
+            if choix == "historique":
+                embed = await _construire_historique(interaction.user.id)
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            elif choix == "inventaire":
+                embed = await build_inventaire_embed(interaction.user.id)
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            elif choix == "classement":
+                embed = await _construire_classement("argent", interaction.user.id)
+                view = ClassementView("argent")
+                view.message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+        except aiomysql.Error as e:
+            logger.critical(f"[profil_actions] Erreur DB ({choix}) : {e}", exc_info=True)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
 
 
 class ProfilActionsView(TimedView):
-    """Boutons + select attachés à /profil : personnalisation, argent (historique/
-    don via ProfilActionsSelect) et accès rapide à la boutique. Agit toujours sur
-    qui clique (interaction.user), pas sur le propriétaire du profil affiché —
-    même principe que AchatSelect dans cogs/boutique.py."""
+    """Boutons + select attachés à /profil : personnalisation, historique/
+    inventaire/classement/don via ProfilActionsSelect, et accès rapide à la
+    boutique. Agit toujours sur qui clique (interaction.user), pas sur le
+    propriétaire du profil affiché — même principe que AchatSelect dans
+    cogs/boutique.py."""
     def __init__(self):
         super().__init__()
         self.add_item(ProfilActionsSelect())
@@ -376,9 +477,8 @@ class Profile(commands.Cog):
     async def profil(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        pool = get_pool()
         try:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                     result = await cursor.fetchone()
@@ -387,12 +487,12 @@ class Profile(commands.Cog):
             # membre voit 0 XP ici puis une valeur différente (40, la valeur de
             # seed du cache) dès qu'il utilise /niveau, uniquement selon l'ordre
             # dans lequel il tape les deux commandes.
-            xp = await cache.get_xp(pool, interaction.user.id)
+            xp = await cache.get_xp(interaction.user.id)
 
             # Rang XP : utilisateurs.xp est toujours à jour en base (bump_xp dans
             # on_message, cogs/events.py, écrit en DB dans le même handler), donc
             # une lecture directe ici est fiable sans passer par le cache.
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT COUNT(*) + 1 FROM utilisateurs WHERE xp > %s", (xp,))
                     (rang,) = await cursor.fetchone()
@@ -415,9 +515,8 @@ class Profile(commands.Cog):
     async def argent(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        pool = get_pool()
         try:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                     result = await cursor.fetchone()
@@ -447,11 +546,10 @@ class Profile(commands.Cog):
     async def niveau(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer()
-        pool = get_pool()
         # Via le cache mémoire (utils/cache.py) : même valeur que celle utilisée par
         # on_message pour calculer les niveaux, sans refaire un aller-retour DB si elle
         # est déjà en cache.
-        xp = await cache.get_xp(pool, interaction.user.id)
+        xp = await cache.get_xp(interaction.user.id)
         nv = self.get_level(xp)
         embed = discord.Embed(
             title="✨ Niveau",
@@ -463,64 +561,14 @@ class Profile(commands.Cog):
         else:
             await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(name="classement", description="Afficher le top 10 du serveur")
-    @app_commands.describe(type="Classer par argent ou par expérience")
-    @app_commands.choices(type=[
-        app_commands.Choice(name="Argent", value="argent"),
-        app_commands.Choice(name="Expérience", value="xp"),
-    ])
-    async def classement(self, interaction: discord.Interaction, type: app_commands.Choice[str]):
-        if not interaction.response.is_done():
-            await interaction.response.defer()
-
-        colonne = type.value
-        if colonne not in COLONNES_CLASSEMENT:
-            await interaction.followup.send("❌ Choix invalide.", ephemeral=True)
-            return
-
-        pool = get_pool()
-        try:
-            async with pool.acquire() as conn:
-                async with conn.cursor() as cursor:
-                    # colonne : validée juste au-dessus contre COLONNES_CLASSEMENT, sûre à interpoler.
-                    await cursor.execute(
-                        f"SELECT user_id, {colonne} FROM utilisateurs ORDER BY {colonne} DESC LIMIT 10"
-                    )
-                    rows = await cursor.fetchall()
-        except aiomysql.Error as e:
-            logger.critical(f"[classement] Erreur DB : {e}", exc_info=True)
-            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
-            return
-
-        if colonne == "argent":
-            titre, unite = "💰 Classement — Argent", "€"
-        else:
-            titre, unite = "✨ Classement — Expérience", "XP"
-
-        if not rows:
-            embed = discord.Embed(title=titre, description="Personne à classer pour le moment.", color=discord.Color.green())
-        else:
-            medailles = ["🥇", "🥈", "🥉"]
-            lignes = []
-            for i, (user_id, valeur) in enumerate(rows):
-                rang = medailles[i] if i < len(medailles) else f"**{i + 1}.**"
-                lignes.append(f"{rang} <@{user_id}> — {valeur or 0} {unite}")
-            embed = discord.Embed(title=titre, description="\n".join(lignes), color=discord.Color.green())
-
-        if interaction.response.is_done():
-            await interaction.followup.send(embed=embed)
-        else:
-            await interaction.response.send_message(embed=embed)
-
     @app_commands.command(name="daily", description="Récupère ta récompense quotidienne")
     async def daily(self, interaction: discord.Interaction):
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
 
         now = int(time.time())
-        pool = get_pool()
         try:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     # Garantit d'abord l'existence de la ligne (un membre n'ayant
                     # jamais gagné d'XP/argent n'en a pas encore — même principe que
@@ -546,6 +594,12 @@ class Profile(commands.Cog):
                     gagne = cursor.rowcount == 1
 
                     if not gagne:
+                        # Lecture simple : connexion() garantit qu'elle voit la
+                        # réclamation qui fait échouer l'UPDATE ci-dessus, même
+                        # faite sur une autre connexion. Sur une image figée
+                        # d'avant, last_daily pouvait valoir NULL et le calcul
+                        # du délai plus bas plantait (ou, depuis MariaDB 11.6,
+                        # l'UPDATE lui-même échouait en erreur 1020).
                         await cursor.execute("SELECT last_daily FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
                         (last_daily,) = await cursor.fetchone()
                     else:

@@ -19,11 +19,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from utils.database import create_pool, close_pool, get_pool
+from utils.database import connexion, create_pool, close_pool
 from utils.error_handler import DiscordErrorHandler
 from utils.setupdatabase import init_db
 from utils.config import load_config, get_config, missing_keys
 from cogs.tickets import demander_confirmation_moderateur
+from utils.transcript import archive_a_jour, archiver_ticket
 
 Token = os.getenv("DISCORD_TOKEN")
 if not Token:
@@ -50,12 +51,45 @@ bot = commands.Bot(
 )
 
 
+# Filet de sécurité de ticket_watcher (voir plus bas) : un ticket fermé depuis
+# 24h sans archive complète n'est supprimé qu'une fois archivé. En cas d'échec,
+# nouvel essai au plus toutes les heures (et non à chaque passage de 2 min :
+# chaque essai relit tout l'historique et retélécharge les pièces jointes), et au
+# plus 7 jours après la fermeture — au-delà, le thread est supprimé quand même,
+# pour qu'un échec durable (page trop volumineuse...) ne le garde pas indéfiniment.
+_DERNIER_ESSAI_ARCHIVE: dict[int, int] = {}
+_DELAI_ENTRE_ESSAIS_ARCHIVE = 3600
+_DELAI_MAX_ARCHIVE = 7 * 86400
+
+
+async def _archive_avant_suppression(thread, closed_at: int, now: int) -> bool:
+    """Tente d'archiver un ticket fermé juste avant la suppression de son thread.
+    True si le thread peut être supprimé (archive enregistrée avec sa page, ou
+    délai maximal dépassé), False pour réessayer à un prochain passage."""
+    if now >= closed_at + _DELAI_MAX_ARCHIVE:
+        _DERNIER_ESSAI_ARCHIVE.pop(thread.id, None)
+        logger.error(
+            f"[ticket_watcher] Ticket {thread.id} supprimé sans archive complète : échec de "
+            "l'archivage pendant 7 jours."
+        )
+        return True
+    dernier = _DERNIER_ESSAI_ARCHIVE.get(thread.id)
+    if dernier is not None and now - dernier < _DELAI_ENTRE_ESSAIS_ARCHIVE:
+        return False
+    # closed_by=None : qui l'a fermé est repris de la table `ticket` (voir
+    # utils/transcript.py).
+    if await archiver_ticket(bot, thread, closed_by=None, closed_at=closed_at):
+        _DERNIER_ESSAI_ARCHIVE.pop(thread.id, None)
+        return True
+    _DERNIER_ESSAI_ARCHIVE[thread.id] = now
+    return False
+
+
 @tasks.loop(seconds=120)
 async def ticket_watcher():
     await bot.wait_until_ready()
 
     now = int(time.time())
-    pool = get_pool()
 
     # Une seule connexion pour lister les tickets : suffisant, rapide, et on la relâche
     # tout de suite après (voir plus bas, chaque étape reprend sa propre connexion —
@@ -63,7 +97,10 @@ async def ticket_watcher():
     # occupée pour rien, alors que le pool est volontairement restreint, voir
     # utils/database.py).
     try:
-        async with pool.acquire() as conn:
+        # connexion() : lecture à jour (voir utils/database.py). Une liste figée à
+        # un état passé pourrait montrer fermé depuis 24h un ticket rouvert entre-
+        # temps, et faire supprimer son thread.
+        async with connexion() as conn:
             async with conn.cursor() as cur:
                 await cur.execute("""
                 SELECT thread_id, last_message, warn_12h, closed_at, statut, modo_id
@@ -88,7 +125,7 @@ async def ticket_watcher():
                     thread = await bot.fetch_channel(thread_id)
                 except discord.NotFound:
                     # Le thread n'existe plus : on nettoie l'entrée orpheline.
-                    async with pool.acquire() as conn:
+                    async with connexion() as conn:
                         async with conn.cursor() as cur:
                             await cur.execute("DELETE FROM ticket WHERE thread_id = %s", (thread_id,))
                         await conn.commit()
@@ -104,8 +141,18 @@ async def ticket_watcher():
             # ---------------------------------------------------------
             if statut == 3:
                 if closed_at and now >= closed_at + (24 * 3600):
+                    # Filet de sécurité avant de perdre le thread pour de bon :
+                    # ticket sans archive complète de cette fermeture (bot arrêté
+                    # pendant la génération, erreur DB ou réseau à ce moment-là,
+                    # ticket rouvert puis refermé, fermé avant la mise en place des
+                    # archives...). Une erreur DB sur la vérification remonte au
+                    # except ci-dessous : suppression reportée au prochain passage
+                    # plutôt qu'un thread supprimé sans archive.
+                    if not await archive_a_jour(thread_id, closed_at):
+                        if not await _archive_avant_suppression(thread, closed_at, now):
+                            continue
                     await thread.delete(reason="Ticket fermé depuis plus de 24h.")
-                    async with pool.acquire() as conn:
+                    async with connexion() as conn:
                         async with conn.cursor() as cur:
                             await cur.execute("DELETE FROM ticket WHERE thread_id = %s", (thread_id,))
                         await conn.commit()
@@ -133,7 +180,7 @@ async def ticket_watcher():
             # même ticket.
             # ---------------------------------------------------------
             if inactivity >= 24 * 3600 and not warn_12h:
-                async with pool.acquire() as conn:
+                async with connexion() as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "UPDATE ticket SET warn_12h = 1 WHERE thread_id = %s AND warn_12h IS NULL",
@@ -151,7 +198,7 @@ async def ticket_watcher():
             # réservation atomique que ci-dessus.
             # ---------------------------------------------------------
             if inactivity >= 72 * 3600:
-                async with pool.acquire() as conn:
+                async with connexion() as conn:
                     async with conn.cursor() as cur:
                         await cur.execute(
                             "UPDATE ticket SET statut = 3, closed_at = %s WHERE thread_id = %s AND statut != 3",
@@ -171,6 +218,11 @@ async def ticket_watcher():
                 # stade) — voir demander_confirmation_moderateur dans cogs/tickets.py.
                 if modo_id:
                     await demander_confirmation_moderateur(bot, thread, modo_id)
+
+                # Transcription + métadonnées pour /archive et /stats-staff
+                # (closed_by NULL = fermeture automatique). Ne lève jamais : un
+                # échec est loggé dans utils/transcript.py sans arrêter la boucle.
+                await archiver_ticket(bot, thread, closed_by=None, closed_at=now)
         except Exception as e:
             logger.error(f"[ticket_watcher] Erreur sur le ticket {thread_id} : {e}")
 
@@ -186,12 +238,11 @@ async def staff_test_watcher():
     await bot.wait_until_ready()
 
     now = int(time.time())
-    pool = get_pool()
 
     guild_id = get_config("GUILD_ID")
     channel_id = get_config("CHANNEL_MODO_ID")
 
-    async with pool.acquire() as conn:
+    async with connexion() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "SELECT id, user_id, role_id FROM temp_roles WHERE origin = 'staff_test' AND end_time <= %s",
@@ -299,6 +350,8 @@ COGS = [
     "cogs.creermessage",
     "cogs.warn",
     "cogs.recrutement",
+    "cogs.archive",
+    "cogs.stats_staff",
 ]
 
 
@@ -322,7 +375,7 @@ async def main():
 
     try:
         await init_db(pool)  # ✅ Crée la DB et toutes les tables avant les cogs
-        await load_config(pool)  # ✅ Charge la table `config` avant les cogs (voir utils/config.py)
+        await load_config()  # ✅ Charge la table `config` avant les cogs (voir utils/config.py)
 
         # OWNER_ID vient maintenant de la table `config` (voir _migrate_env_to_config
         # dans utils/setupdatabase.py) : il ne peut donc être lu qu'une fois init_db()

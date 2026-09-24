@@ -7,10 +7,11 @@ import asyncio
 from dotenv import load_dotenv
 load_dotenv()
 from datetime import datetime, timedelta, timezone
-from cogs.warn import ContestationView
-from utils.database import get_pool, increment_warn
+from cogs.warn import ContestationView, JOURS_EXPIRATION
+from utils.database import connexion, increment_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 from utils.config import get_config
+from utils.transcript import archiver_ticket
 
 logger = logging.getLogger(__name__)
 
@@ -109,8 +110,7 @@ class ModoView(discord.ui.View):
     async def prendre(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer(ephemeral=True)
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
                         "SELECT thread_id, membre_id, message_ticket_id FROM ticket WHERE modo_message_id = %s",
@@ -153,8 +153,7 @@ class ModoView(discord.ui.View):
         await messs.delete()
 
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
                         "UPDATE ticket SET modo_id = %s, statut = %s WHERE thread_id = %s",
@@ -184,8 +183,7 @@ class SatisfactionView(discord.ui.View):
         await interaction.response.defer()
 
         selected_value = select.values[0]
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as c:
                 await c.execute("SELECT membre_id FROM ticket WHERE thread_id = %s",
                           (interaction.channel.id,))
@@ -224,7 +222,7 @@ class SatisfactionView(discord.ui.View):
         try:
             iso_time = datetime.now(timezone.utc).isoformat()
 
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 # Incrément atomique (voir utils/database.py) : évite que ce warn et
                 # un /warn (ou une autre satisfaction de ticket) posés au même
                 # moment sur ce membre ne s'écrasent l'un l'autre. Fait dans la même
@@ -281,6 +279,9 @@ class SatisfactionView(discord.ui.View):
                 color=discord.Color.orange()
             )
 
+        # Même mention que le MP de /warn (cogs/warn.py) : ce warn expire aussi
+        # automatiquement (check_warn_expirations).
+        embed.description += f"\n⌛ Il expirera au plus tôt dans {JOURS_EXPIRATION} jours."
         embed.add_field(name="C'est une erreur ?", value="Va vite ouvrir un ticket et conteste cet avertissement")
         # Footer parsé par ContestationView (cogs/warn.py) pour retrouver le warn
         # concerné sans avoir besoin de le stocker sur l'instance de la vue.
@@ -320,8 +321,7 @@ class ConfirmationClotureView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction, select: discord.ui.Select):
         await interaction.response.defer(ephemeral=True)
 
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as c:
                 await c.execute(
                     "SELECT thread_id FROM ticket WHERE mod_dm_message_id = %s",
@@ -377,10 +377,10 @@ class ConfirmationClotureView(discord.ui.View):
             # relit l'ancien timestamp d'inactivité au prochain passage (120s) et
             # referme aussitôt le ticket qu'on vient de rouvrir.
             now_ts = int(time.time())
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
-                        "UPDATE ticket SET statut = 2, closed_at = NULL, last_message = %s, warn_12h = NULL WHERE thread_id = %s",
+                        "UPDATE ticket SET statut = 2, closed_at = NULL, closed_by = NULL, last_message = %s, warn_12h = NULL WHERE thread_id = %s",
                         (now_ts, thread_id)
                     )
                 await conn.commit()
@@ -422,8 +422,7 @@ async def demander_confirmation_moderateur(bot, thread: discord.Thread, modo_id:
         return
 
     try:
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as c:
                 await c.execute(
                     "UPDATE ticket SET mod_dm_message_id = %s WHERE thread_id = %s",
@@ -442,8 +441,7 @@ class FermerView(discord.ui.View):
     async def create(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         thread = interaction.channel
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as c:
                 await c.execute("SELECT raison, membre_id FROM ticket WHERE thread_id = %s",
                           (thread.id,))
@@ -488,16 +486,24 @@ class FermerView(discord.ui.View):
         await thread.send(f"Ce ticket a été fermé par {interaction.user.mention}. Il sera supprimé <t:{ts}:R>")
         await thread.edit(locked=True, archived=True)
 
+        closed_at = int(time.time())
         try:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
-                        "UPDATE ticket SET statut = 3, closed_at = %s WHERE thread_id = %s",
-                        (int(time.time()), thread.id)
+                        "UPDATE ticket SET statut = 3, closed_at = %s, closed_by = %s WHERE thread_id = %s",
+                        (closed_at, interaction.user.id, thread.id)
                     )
                 await conn.commit()
         except aiomysql.Error as e:
             logger.critical(f"[tickets:fermer] Erreur DB : {e}", exc_info=True)
+
+        # Transcription HTML + métadonnées pour /archive et /stats-staff, avec le
+        # même horodatage de fermeture que la table `ticket`. En dernier : le
+        # message de fermeture ci-dessus fait partie de l'archive, et une
+        # génération lente (pièces jointes à intégrer) ne retarde rien d'autre.
+        # Ne lève jamais (échecs loggés dans utils/transcript.py).
+        await archiver_ticket(bot, thread, closed_by=interaction.user.id, closed_at=closed_at)
 
 
 class TicketCreateView(discord.ui.View):
@@ -546,8 +552,7 @@ class TicketCreateView(discord.ui.View):
         await interaction.message.edit(view=TicketCreateView())
 
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         "INSERT INTO ticket (thread_id, membre_id, statut, raison, modo_message_id, message_ticket_id) VALUES (%s, %s, %s, %s, %s, %s)",
@@ -685,8 +690,7 @@ class ConditionsPartenariatView(discord.ui.View):
         # qui écraserait des attributs stockés sur l'instance par une instance vide
         # si le bot redémarre avant que l'utilisateur ait cliqué.
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
                         "UPDATE ticket SET partenariat_description = %s, partenariat_pub = %s WHERE thread_id = %s",
@@ -735,8 +739,7 @@ class MentionPartenariatView(discord.ui.View):
 
         description = pub = None
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
                         "SELECT partenariat_description, partenariat_pub FROM ticket WHERE thread_id = %s",
