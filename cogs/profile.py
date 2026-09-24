@@ -437,12 +437,67 @@ class ClassementView(TimedView):
         await self._basculer(interaction, "xp")
 
 
+async def _donnees_profil(user_id: int) -> tuple[int, int, int]:
+    """(argent, xp, rang) affichés sur la carte de /profil. Lève aiomysql.Error."""
+    async with connexion() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (user_id,))
+            result = await cursor.fetchone()
+    argent = result[0] if result and result[0] is not None else 0
+    # Via le cache mémoire (utils/cache.py), comme /niveau : sinon un nouveau
+    # membre voit 0 XP ici puis une valeur différente (40, la valeur de
+    # seed du cache) dès qu'il utilise /niveau, uniquement selon l'ordre
+    # dans lequel il tape les deux commandes.
+    xp = await cache.get_xp(user_id)
+
+    # Rang XP : utilisateurs.xp est toujours à jour en base (bump_xp dans
+    # on_message, cogs/events.py, écrit en DB dans le même handler), donc
+    # une lecture directe ici est fiable sans passer par le cache.
+    async with connexion() as conn:
+        async with conn.cursor() as cursor:
+            await cursor.execute("SELECT COUNT(*) + 1 FROM utilisateurs WHERE xp > %s", (xp,))
+            (rang,) = await cursor.fetchone()
+    return argent, xp, rang
+
+
+async def _contenu_profil(membre: discord.Member | discord.User, argent: int, xp: int, rang: int) -> dict:
+    """Contenu du message /profil : la carte ({"file": ...}), ou un embed texte
+    ({"embed": ...}) si elle n'a pas pu être générée."""
+    try:
+        return {"file": await generate_profile_card(membre, argent, xp, rang)}
+    except Exception as e:
+        # Avatar illisible (erreur passagère du CDN Discord) ou rendu Pillow
+        # en échec : le profil s'affiche quand même, en texte, plutôt que de
+        # laisser la commande sans réponse.
+        logger.error(f"[profil] Carte de profil non générée pour {membre.id} : {e}", exc_info=True)
+        embed = discord.Embed(title=f"Profil de {membre.display_name}", color=discord.Color.green())
+        embed.set_thumbnail(url=membre.display_avatar.url)
+        embed.add_field(name="💰 Argent", value=f"{argent} €")
+        embed.add_field(name="✨ Niveau", value=f"{Profile.get_level(xp)} ({xp} XP)")
+        # Même format que la carte (voir utils/profile_card.py).
+        embed.add_field(name="🏆 Rang", value=f"#{rang} sur le serveur")
+        return {"embed": embed}
+
+
+def _resume_actualisation(gain_argent: int, gain_xp: int) -> str:
+    """Ce qui a changé depuis le dernier affichage de la carte (« +15 XP · -30 € »)."""
+    morceaux = []
+    if gain_xp:
+        morceaux.append(f"{gain_xp:+} XP")
+    if gain_argent:
+        morceaux.append(f"{gain_argent:+} €")
+    if not morceaux:
+        return "🔄 Profil actualisé : rien de nouveau depuis le dernier affichage."
+    return f"🔄 Profil actualisé : {' · '.join(morceaux)} depuis le dernier affichage."
+
+
 class ProfilActionsSelect(discord.ui.Select):
     """Select "Actions" attaché à /profil (historique, inventaire, classement,
     don — les deux du milieu remplacent les anciennes commandes /inventaire et
-    /classement). Réservé à qui a lancé /profil (voir ProfilActionsView) : la
-    carte est publique, mais un autre membre qui clique dessus est renvoyé vers
-    sa propre commande. Les résultats s'affichent en éphémère."""
+    /classement —, et actualisation de la carte). Réservé à qui a lancé /profil
+    (voir ProfilActionsView) : la carte est publique, mais un autre membre qui
+    clique dessus est renvoyé vers sa propre commande. Les résultats
+    s'affichent en éphémère."""
     def __init__(self):
         super().__init__(
             placeholder="💰 Actions",
@@ -453,12 +508,44 @@ class ProfilActionsSelect(discord.ui.Select):
                 discord.SelectOption(label="Inventaire", value="inventaire", emoji="🎒"),
                 discord.SelectOption(label="Classement", value="classement", emoji="🏆"),
                 discord.SelectOption(label="Donner de l'argent", value="donner", emoji="💸"),
+                discord.SelectOption(label="Actualiser mon profil", value="actualiser", emoji="🔄"),
             ],
             row=0,
         )
 
+    async def _actualiser(self, interaction: discord.Interaction) -> None:
+        """Régénère la carte sur place, puis dit en éphémère ce qui a changé
+        depuis son dernier affichage (XP, argent)."""
+        # Mise à jour différée du message de la carte : la regénérer (avatar,
+        # rendu Pillow) peut dépasser les 3 secondes laissées pour répondre.
+        await interaction.response.defer()
+        try:
+            argent, xp, rang = await _donnees_profil(interaction.user.id)
+        except aiomysql.Error as e:
+            logger.critical(f"[profil_actions] Erreur DB (actualiser) : {e}", exc_info=True)
+            await interaction.edit_original_response(view=self.view)
+            await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
+            return
+
+        contenu = await _contenu_profil(interaction.user, argent, xp, rang)
+        # Carte en fichier joint ou texte de secours en embed : chacun remplace
+        # l'autre, sans quoi l'ancienne carte resterait affichée à côté.
+        if "file" in contenu:
+            await interaction.edit_original_response(attachments=[contenu["file"]], embed=None, view=self.view)
+        else:
+            await interaction.edit_original_response(attachments=[], embed=contenu["embed"], view=self.view)
+
+        vue = self.view
+        message = _resume_actualisation(argent - vue.argent, xp - vue.xp)
+        vue.argent, vue.xp = argent, xp
+        await interaction.followup.send(message, ephemeral=True)
+
     async def callback(self, interaction: discord.Interaction):
         choix = self.values[0]
+        if choix == "actualiser":
+            await self._actualiser(interaction)
+            return
+
         # Réinitialise d'abord ce select sur la carte /profil (voir TimedView),
         # en guise de réponse au clic : sans ça, Discord le garde affiché sur le
         # choix fait et le même choix ne peut pas être refait (ex: reconsulter
@@ -494,9 +581,14 @@ class ProfilActionsView(TimedView):
     boutique. Réservés au membre qui a lancé /profil (`auteur`) : la carte est
     publique, et sans cette vérification n'importe quel membre du salon pouvait
     utiliser les menus du profil d'un autre (donner de l'argent « depuis » sa
-    carte, ouvrir sa boutique...)."""
-    def __init__(self, *, auteur: int):
+    carte, ouvrir sa boutique...).
+
+    `argent` et `xp` : valeurs affichées sur la carte, pour dire au membre ce
+    qu'il a gagné quand il l'actualise (voir ProfilActionsSelect)."""
+    def __init__(self, *, auteur: int, argent: int, xp: int):
         super().__init__(auteur=auteur)
+        self.argent = argent
+        self.xp = xp
         self.add_item(ProfilActionsSelect())
 
     @discord.ui.button(label="🎮 Personnaliser mon profil", style=discord.ButtonStyle.blurple, row=1)
@@ -542,7 +634,9 @@ class ProfilActionsView(TimedView):
 class Profile(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-    def get_level(self, xp: int):
+
+    @staticmethod
+    def get_level(xp: int):
         level = 1
         xp_needed = 10
 
@@ -557,45 +651,14 @@ class Profile(commands.Cog):
         if not interaction.response.is_done():
             await interaction.response.defer()
         try:
-            async with connexion() as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute("SELECT argent FROM utilisateurs WHERE user_id = %s", (interaction.user.id,))
-                    result = await cursor.fetchone()
-            argent = result[0] if result and result[0] is not None else 0
-            # Via le cache mémoire (utils/cache.py), comme /niveau : sinon un nouveau
-            # membre voit 0 XP ici puis une valeur différente (40, la valeur de
-            # seed du cache) dès qu'il utilise /niveau, uniquement selon l'ordre
-            # dans lequel il tape les deux commandes.
-            xp = await cache.get_xp(interaction.user.id)
-
-            # Rang XP : utilisateurs.xp est toujours à jour en base (bump_xp dans
-            # on_message, cogs/events.py, écrit en DB dans le même handler), donc
-            # une lecture directe ici est fiable sans passer par le cache.
-            async with connexion() as conn:
-                async with conn.cursor() as cursor:
-                    await cursor.execute("SELECT COUNT(*) + 1 FROM utilisateurs WHERE xp > %s", (xp,))
-                    (rang,) = await cursor.fetchone()
+            argent, xp, rang = await _donnees_profil(interaction.user.id)
         except aiomysql.Error as e:
             logger.critical(f"[profil] Erreur DB : {e}", exc_info=True)
             await interaction.followup.send("❌ Une erreur est survenue avec la base de données.", ephemeral=True)
             return
 
-        view = ProfilActionsView(auteur=interaction.user.id)
-        try:
-            fichier = await generate_profile_card(interaction.user, argent, xp, rang)
-            contenu = {"file": fichier}
-        except Exception as e:
-            # Avatar illisible (erreur passagère du CDN Discord) ou rendu Pillow
-            # en échec : le profil s'affiche quand même, en texte, plutôt que de
-            # laisser la commande sans réponse.
-            logger.error(f"[profil] Carte de profil non générée pour {interaction.user.id} : {e}", exc_info=True)
-            embed = discord.Embed(title=f"Profil de {interaction.user.display_name}", color=discord.Color.green())
-            embed.set_thumbnail(url=interaction.user.display_avatar.url)
-            embed.add_field(name="💰 Argent", value=f"{argent} €")
-            embed.add_field(name="✨ Niveau", value=f"{self.get_level(xp)} ({xp} XP)")
-            # Même format que la carte (voir utils/profile_card.py).
-            embed.add_field(name="🏆 Rang", value=f"#{rang} sur le serveur")
-            contenu = {"embed": embed}
+        view = ProfilActionsView(auteur=interaction.user.id, argent=argent, xp=xp)
+        contenu = await _contenu_profil(interaction.user, argent, xp, rang)
         if interaction.response.is_done():
             message = await interaction.followup.send(view=view, **contenu)
         else:
