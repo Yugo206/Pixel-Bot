@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import discord
 
-from utils.database import get_pool
+from utils.database import connexion, get_pool
 from utils.config import get_config
 
 
@@ -63,11 +63,11 @@ class DiscordErrorHandler(logging.Handler):
 
     async def _store_error(self, record: logging.LogRecord) -> None:
         try:
-            pool = get_pool()
+            get_pool()
         except RuntimeError:
             return  # Pool pas encore prêt (erreur survenue avant create_pool()).
 
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as c:
                 await c.execute(
                     "INSERT INTO error (created_at, created_at_iso, level, source, message, traceback) "

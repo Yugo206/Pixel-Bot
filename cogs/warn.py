@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import time
 from dotenv import load_dotenv
 load_dotenv()
-from utils.database import connexion, get_pool, increment_warn, decrement_warn
+from utils.database import connexion, increment_warn, decrement_warn
 from utils.sanctions import apply_warn_sanction, get_modo_channel
 from utils.config import get_config
 
@@ -112,8 +112,7 @@ class RaisonrefuserModal(discord.ui.Modal, title="Raison"):
         except discord.Forbidden:
             pass
 
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as c:
                 await c.execute("DELETE FROM contestations WHERE message_id = %s", (self.message_id,))
             await conn.commit()
@@ -131,8 +130,7 @@ class RefuseroracceptercontestationView(discord.ui.View):
     @discord.ui.button(label="Accepter", style=discord.ButtonStyle.green, custom_id="warn:accepter")
     async def accepter(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         "SELECT membre_id, warn_id FROM contestations WHERE message_id = %s",
@@ -160,7 +158,7 @@ class RefuseroracceptercontestationView(discord.ui.View):
             await interaction.response.defer()
 
             warn_retire = False
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 # Réclame la contestation de façon atomique avant de toucher au
                 # compteur : si un double clic (ou deux modérateurs) arrivent en
                 # même temps, un seul des deux DELETE obtient rowcount == 1 et
@@ -247,8 +245,7 @@ class RefuseroracceptercontestationView(discord.ui.View):
     @discord.ui.button(label="Refuser", style=discord.ButtonStyle.red, custom_id="warn:refuser")
     async def refuser(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute(
                         "SELECT membre_id FROM contestations WHERE message_id = %s",
@@ -311,8 +308,7 @@ class ContestationModal(discord.ui.Modal, title="Contestation"):
         msg = await channel.send(embed=embed, view=RefuseroracceptercontestationView())
 
         warn_id = self.warn[0] if self.warn else None
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as c:
                 await c.execute(
                     "INSERT INTO contestations (message_id, membre_id, warn_id) VALUES (%s, %s, %s)",
@@ -358,9 +354,8 @@ class Warn(commands.Cog):
     async def check_tempbans(self):
         try:
             now = int(time.time())
-            pool = get_pool()
 
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     await c.execute(
                         "SELECT user_id FROM temp_bans WHERE unban_at <= %s",
@@ -385,7 +380,7 @@ class Warn(commands.Cog):
                 except (discord.NotFound, discord.Forbidden):
                     pass
 
-                async with pool.acquire() as conn:
+                async with connexion() as conn:
                     async with conn.cursor() as c:
                         await c.execute(
                             "DELETE FROM temp_bans WHERE user_id = %s",
@@ -595,8 +590,7 @@ class Warn(commands.Cog):
             timestamp = int(time.time())
             iso_time = datetime.now(timezone.utc).isoformat()
 
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 # Incrément atomique (voir utils/database.py) : évite que deux warns
                 # posés au même moment sur le même membre ne s'écrasent l'un
                 # l'autre. Fait dans la même transaction que l'INSERT INTO warns
@@ -718,9 +712,8 @@ class Warn(commands.Cog):
     async def unwarn(self, interaction: discord.Interaction, warn_id: int):
         await interaction.response.defer(ephemeral=True)
 
-        pool = get_pool()
         try:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as c:
                     await c.execute("SELECT user_id FROM warns WHERE id = %s", (warn_id,))
                     row = await c.fetchone()

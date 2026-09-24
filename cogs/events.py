@@ -11,7 +11,7 @@ from cogs.recrutement import ConditionsSelect, FormulaireBouton, Accepterview
 from dotenv import load_dotenv
 load_dotenv()
 
-from utils.database import get_pool
+from utils.database import connexion
 from utils import cache
 from utils.config import get_config
 
@@ -84,8 +84,7 @@ class Events(commands.Cog):
     @commands.Cog.listener()
     async def on_member_remove(self, member):
         try:
-            pool = get_pool()
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cursor:
                     await cursor.execute("DELETE FROM utilisateurs WHERE user_id = %s", (member.id,))
                 await conn.commit()
@@ -109,10 +108,8 @@ class Events(commands.Cog):
         if message.guild is not None and self.bot.user in message.mentions:
             await message.reply(random.choice(MENTION_RESPONSES), mention_author=False)
 
-        pool = get_pool()
-
         if message.channel.type == discord.ChannelType.private_thread:
-            async with pool.acquire() as conn:
+            async with connexion() as conn:
                 async with conn.cursor() as cur:
                     await cur.execute("SELECT membre_id FROM ticket WHERE thread_id = %s", (message.channel.id,))
                     rppw = await cur.fetchone()
@@ -135,7 +132,7 @@ class Events(commands.Cog):
         # SELECT à chaque message : la valeur ne change qu'à un message de ce membre
         # ou à un achat en boutique, pas besoin de la relire en base à chaque fois.
         if message.guild is not None:
-            xp_actuel = await cache.get_xp(pool, message.author.id)
+            xp_actuel = await cache.get_xp(message.author.id)
             level_avant = self.get_level(xp_actuel)
 
             xp_gain = random.randint(1, 10)
@@ -155,7 +152,7 @@ class Events(commands.Cog):
             # Incrément relatif (et non une valeur absolue) : reste correct même si
             # deux messages du même membre finissent par s'exécuter en parallèle.
             try:
-                async with pool.acquire() as conn:
+                async with connexion() as conn:
                     async with conn.cursor() as cursor:
                         await cursor.execute(
                             "UPDATE utilisateurs SET xp = xp + %s, argent = argent + %s WHERE user_id = %s",

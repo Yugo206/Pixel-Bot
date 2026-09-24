@@ -74,8 +74,9 @@ def get_pool() -> aiomysql.Pool:
 
 @asynccontextmanager
 async def connexion():
-    """Connexion du pool qui lit toujours les données à jour. À préférer à
-    get_pool().acquire() pour tout nouveau code.
+    """Connexion du pool qui lit toujours les données à jour. À utiliser partout
+    à la place de get_pool().acquire() (seul init_db, au démarrage, reçoit le
+    pool directement).
 
     Avec autocommit=False, InnoDB (REPEATABLE READ) fige une image de la base à
     la première lecture d'une transaction, jusqu'au commit ou rollback. Une
@@ -164,8 +165,7 @@ async def ajouter_rarete(user_id: int, rarete: str):
     if rarete not in RARETES_VALIDES:
         raise ValueError("Rareté invalide")
 
-    pool = get_pool()
-    async with pool.acquire() as conn:
+    async with connexion() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "INSERT IGNORE INTO utilisateurs (user_id) VALUES (%s)",
