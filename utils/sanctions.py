@@ -1,10 +1,10 @@
-import os
 import time
 from datetime import timedelta
 
 import discord
 
-from utils.database import get_pool
+from utils.database import connexion
+from utils.config import get_config
 
 # Palier d'avertissements -> sanction appliquée.
 SANCTION_THRESHOLDS = {
@@ -16,7 +16,7 @@ SANCTION_THRESHOLDS = {
 
 async def get_modo_channel(bot, guild=None):
     """Récupère le salon de modération (CHANNEL_MODO_ID), en repassant par l'API si besoin."""
-    raw_id = os.getenv("CHANNEL_MODO_ID")
+    raw_id = get_config("CHANNEL_MODO_ID")
     if not raw_id:
         return None
     channel_id = int(raw_id)
@@ -74,7 +74,7 @@ async def apply_warn_sanction(guild, membre: discord.Member, channel, warn_count
         )
         try:
             await membre.send(embed=embed)
-        except discord.Forbidden:
+        except discord.HTTPException:  # MP fermés : la sanction s'applique quand même
             pass
 
     elif sanction["type"] == "ban":
@@ -89,7 +89,7 @@ async def apply_warn_sanction(guild, membre: discord.Member, channel, warn_count
         embed.add_field(name="Temps", value=sanction["label"], inline=False)
         try:
             await membre.send(embed=embed)
-        except discord.Forbidden:
+        except discord.HTTPException:  # MP fermés : la sanction s'applique quand même
             pass
 
         try:
@@ -103,8 +103,7 @@ async def apply_warn_sanction(guild, membre: discord.Member, channel, warn_count
                 await channel.send(f"❌ Impossible de bannir {membre.mention} : {e}")
             return
 
-        pool = get_pool()
-        async with pool.acquire() as conn:
+        async with connexion() as conn:
             async with conn.cursor() as c:
                 await c.execute(
                     "INSERT INTO temp_bans (user_id, unban_at) VALUES (%s, %s)",

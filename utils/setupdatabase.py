@@ -1,3 +1,5 @@
+import logging
+import os
 import warnings
 
 import aiomysql
@@ -5,6 +7,8 @@ import pymysql
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 TABLES = {
     "utilisateurs": [
@@ -14,6 +18,9 @@ TABLES = {
         "niveau INT DEFAULT 0",
         "nb_tickets_open INT DEFAULT 0",
         "warn INT DEFAULT 0",
+        # Timestamp epoch du dernier /daily réclamé (voir cogs/profile.py) ; NULL =
+        # jamais réclamé.
+        "last_daily BIGINT",
         "commun INT DEFAULT 0",
         "rare INT DEFAULT 0",
         "epique INT DEFAULT 0",
@@ -38,7 +45,12 @@ TABLES = {
         # BIGINT : "valeur" peut contenir un id de rôle Discord (snowflake), qui dépasse
         # largement la plage d'un INT 32 bits.
         "valeur BIGINT NOT NULL",
-        "duration INT"
+        "duration INT",
+        # Nombre maximal d'achats de cet objet par membre et par jour (jour
+        # calendaire, heure de Paris — voir achats_jour ci-dessous et AchatSelect
+        # dans cogs/boutique.py). NULL = illimité. Le DEFAULT s'applique aussi
+        # aux objets déjà en base quand la colonne est ajoutée par init_db.
+        "limite_jour INT DEFAULT 5"
     ],
 
     "temp_bans": [
@@ -71,7 +83,12 @@ TABLES = {
         # cette dernière est enregistrée globalement au démarrage (bot.add_view) pour
         # rester persistante, ce qui écraserait des attributs stockés sur l'instance.
         "partenariat_description TEXT",
-        "partenariat_pub TEXT"
+        "partenariat_pub TEXT",
+        # Modérateur qui a cliqué « Fermer le ticket » (voir FermerView dans
+        # cogs/tickets.py) ; NULL pour une fermeture automatique, remis à NULL à la
+        # réouverture. Permet de régénérer l'archive d'un ticket (voir
+        # ticket_watcher dans start.py) sans perdre qui l'a fermé.
+        "closed_by BIGINT"
     ],
     "role_special": [
         "id INT NOT NULL PRIMARY KEY AUTO_INCREMENT",
@@ -134,7 +151,118 @@ TABLES = {
         "message TEXT NOT NULL",
         "traceback TEXT",
     ],
+
+    "config": [
+        # Réglages autrefois en .env (IDs de rôles/salons, cooldowns, montants —
+        # voir ENV_CONFIG_KEYS et _migrate_env_to_config ci-dessous), maintenant
+        # éditables directement en base (même principe que la table `shop`, sans
+        # commande dédiée). VARCHAR/VARCHAR comme `profil_extra` : ce ne sont que
+        # des paires clé/valeur en texte, jamais interprétées en SQL.
+        "cle VARCHAR(64) PRIMARY KEY",
+        "valeur VARCHAR(255)",
+    ],
+
+    "transactions": [
+        # Historique des mouvements d'argent (achats boutique, dons envoyés/reçus,
+        # /daily) affiché via le select "Actions" attaché à /profil (voir
+        # utils/transactions.py et cogs/profile.py). Pur journal : jamais relu
+        # pour recalculer un solde, utilisateurs.argent reste la seule source de
+        # vérité — uniquement pour affichage. `montant` est signé (négatif pour
+        # une dépense) pour un affichage uniforme sans logique par `type`.
+        "id INT PRIMARY KEY AUTO_INCREMENT",
+        "user_id BIGINT NOT NULL",
+        "type VARCHAR(20) NOT NULL",
+        "montant INT NOT NULL",
+        "detail VARCHAR(255)",
+        "created_at BIGINT NOT NULL",
+    ],
+
+    "achats_jour": [
+        # Compteur d'achats par membre, par objet et par jour (voir shop.limite_jour
+        # ci-dessus) : une ligne par (membre, objet, jour) plutôt qu'une ligne par
+        # achat, pour que la vérification de la limite soit un simple UPDATE
+        # conditionnel atomique (nb < limite) au lieu d'un COUNT(*) suivi d'un
+        # INSERT, qui laisserait passer deux achats simultanés au-delà de la limite.
+        # `item` = shop.name (même type). Les lignes des jours passés ne servent
+        # plus à rien et sont purgées toutes les 5 minutes (voir check_temp_roles
+        # dans cogs/boutique.py).
+        "user_id BIGINT NOT NULL",
+        "item VARCHAR(100) NOT NULL",
+        "jour DATE NOT NULL",
+        "nb INT NOT NULL DEFAULT 0",
+        "PRIMARY KEY(user_id, item, jour)"
+    ],
+
+    "ticket_archives": [
+        # Transcription HTML d'un ticket, générée à sa fermeture (manuelle ou
+        # automatique, voir utils/transcript.py) et consultable via /archive
+        # (cogs/archive.py). Table séparée de `ticket` car ticket_watcher (start.py)
+        # supprime la ligne `ticket` 24h après la fermeture : l'archive et les
+        # statistiques staff (cogs/stats_staff.py) doivent lui survivre.
+        # Une ligne par thread : un ticket rouvert puis refermé met à jour son
+        # archive au lieu d'en créer une seconde.
+        "thread_id BIGINT PRIMARY KEY",
+        "nom VARCHAR(100)",
+        "membre_id BIGINT NOT NULL",
+        "modo_id BIGINT",
+        "raison TEXT",
+        # Ouverture du ticket (déduite de l'id du thread, un snowflake Discord) et
+        # premier message d'un modérateur : sert au temps de réponse moyen.
+        "created_at BIGINT NOT NULL",
+        "first_response_at BIGINT",
+        "first_response_by BIGINT",
+        "closed_at BIGINT NOT NULL",
+        # NULL = fermeture automatique pour inactivité.
+        "closed_by BIGINT",
+        "nb_messages INT NOT NULL DEFAULT 0",
+        # Page HTML compressée (zlib) ; NULL si la génération a échoué (les
+        # métadonnées ci-dessus restent utiles aux statistiques). html_taille =
+        # taille décompressée en octets, pour vérifier la limite d'envoi Discord
+        # sans avoir à décompresser.
+        "html LONGBLOB",
+        "html_taille INT",
+        # Fermeture (closed_at) dont la page ci-dessus est la transcription. Diffère
+        # de closed_at quand un ticket rouvert puis refermé n'a pas pu être
+        # régénéré : on garde alors l'ancienne page, que ticket_watcher (start.py)
+        # ne doit pas prendre pour celle de la dernière fermeture avant de
+        # supprimer le thread (voir archive_a_jour dans utils/transcript.py).
+        "html_closed_at BIGINT",
+    ],
+
+    "ticket_archive_participants": [
+        # Membres ayant écrit dans un ticket archivé (hors bots) : /archive montre
+        # à un modérateur les tickets auxquels il a participé, pas seulement ceux
+        # qu'il a pris en charge. Clé (user_id, thread_id) dans cet ordre : la
+        # recherche se fait toujours par membre.
+        "user_id BIGINT NOT NULL",
+        "thread_id BIGINT NOT NULL",
+        "PRIMARY KEY(user_id, thread_id)"
+    ],
+
+    "warn_expirations": [
+        # Date (epoch) de la dernière expiration automatique d'un warn pour ce
+        # membre (voir la boucle d'expiration dans cogs/warn.py : au plus un warn
+        # retiré tous les 30 jours). Table séparée de `utilisateurs`, dont la
+        # ligne est supprimée quand le membre quitte le serveur (voir
+        # on_member_remove dans cogs/events.py) alors que ses warns, eux, restent.
+        "user_id BIGINT PRIMARY KEY",
+        "derniere_expiration BIGINT NOT NULL",
+    ],
 }
+
+# Clés .env historiquement optionnelles (IDs de rôles/salons, cooldowns, montants)
+# déplacées en base par _migrate_env_to_config pour ne garder dans .env que le
+# strict nécessaire au démarrage (secrets + connexion DB, voir README). Les vraies
+# variables de bootstrap (DISCORD_TOKEN, DB_*, LOG_LEVEL) ne sont volontairement
+# pas dans cette liste : elles doivent exister avant même que le pool ne soit créé.
+ENV_CONFIG_KEYS = [
+    "GUILD_ID", "OWNER_ID",
+    "CHANNEL_COMMANDE_ID", "CHANNEL_MODO_ID", "CHANNEL_TRADE_ID",
+    "ROLE_MODO_ID", "ROLE_RECRUTEMENT",
+    "ROLE_PC", "ROLE_XBOX", "ROLE_PLAYSTATION", "ROLE_NINTENDO", "ROLE_FORTNITE",
+    "ROLE_MINECRAFT", "ROLE_BRAWLSTARS", "ROLE_GTA", "ROLE_ROBLOX",
+    "DM_ERROR_COOLDOWN", "DAILY_REWARD", "DAILY_COOLDOWN",
+]
 
 
 async def init_db(pool: aiomysql.Pool):
@@ -177,6 +305,28 @@ async def init_db(pool: aiomysql.Pool):
 
             # 6️⃣ Contrainte UNIQUE sur role_special.user_id (voir _migrate_role_special_user_unique).
             await _migrate_role_special_user_unique(c)
+
+            # 7️⃣ Copie ponctuelle des variables .env optionnelles vers `config`
+            # (voir _migrate_env_to_config).
+            await _migrate_env_to_config(c)
+
+            # 8️⃣ Index (user_id, created_at) sur `transactions` : utilisé à chaque
+            # affichage de l'historique des 20 dernières transactions d'un membre.
+            await _ajouter_index(c, "transactions", "idx_user_created", "user_id, created_at")
+
+            # 9️⃣ Index des requêtes ajoutées avec les archives, l'expiration des
+            # warns et la limite d'achats : sans eux, chacune parcourt toute la table.
+            # - archives les plus récentes (/archive) et période de /stats-staff ;
+            await _ajouter_index(c, "ticket_archives", "idx_closed", "closed_at")
+            # - warns d'un membre, du plus ancien au plus récent (boucle horaire
+            #   d'expiration et /warns, cogs/warn.py) ;
+            await _ajouter_index(c, "warns", "idx_user_created", "user_id, created_at")
+            # - rôle temporaire d'un membre, relu à chaque achat en boutique ;
+            await _ajouter_index(c, "temp_roles", "idx_user_role", "user_id, role_id")
+            # - compteurs des jours passés, purgés toutes les 5 minutes (sans index,
+            #   la purge verrouillerait au passage toutes les lignes de la table,
+            #   et donc les achats en cours).
+            await _ajouter_index(c, "achats_jour", "idx_jour", "jour")
 
         await conn.commit()
 
@@ -253,3 +403,64 @@ async def _migrate_role_special_user_unique(c):
         ON t1.user_id = t2.user_id AND t1.id < t2.id
     """)
     await c.execute("ALTER TABLE role_special ADD CONSTRAINT user_id_unique UNIQUE (user_id)")
+
+
+async def _ajouter_index(c, table: str, index: str, colonnes: str):
+    """Ajoute l'index `index` (sur `colonnes`) à `table` s'il n'existe pas déjà.
+    Idempotent, comme les autres migrations ci-dessus : sans effet une fois
+    l'index posé. Les index ne passent pas par TABLES, dont chaque entrée (hors
+    PRIMARY KEY) est traitée comme une colonne à ajouter."""
+    await c.execute(
+        "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND INDEX_NAME = %s",
+        (table, index)
+    )
+    (already_done,) = await c.fetchone()
+    if already_done:
+        return
+
+    await c.execute(f"ALTER TABLE {table} ADD INDEX {index} ({colonnes})")
+
+
+async def _migrate_env_to_config(c):
+    """Copie dans `config` les clés de ENV_CONFIG_KEYS définies dans l'environnement
+    et pas encore en base.
+
+    Idempotente et sans écrasement : une clé déjà présente dans `config` — qu'elle
+    y ait été copiée lors d'un démarrage précédent, ou insérée/modifiée à la main
+    par un admin (voir README, `config` est géré directement en base, sans commande
+    dédiée) — n'est jamais réécrite depuis .env. Une fois toutes les clés migrées,
+    cette fonction se réduit à un simple SELECT à chaque démarrage : elle
+    "s'éteint" d'elle-même sans qu'il soit nécessaire de la supprimer du code."""
+    await c.execute("SELECT cle FROM config")
+    deja_en_base = {row[0] for row in await c.fetchall()}
+
+    a_migrer = [
+        (cle, valeur)
+        for cle in ENV_CONFIG_KEYS
+        if cle not in deja_en_base and (valeur := os.getenv(cle))
+    ]
+    if not a_migrer:
+        return
+
+    await c.executemany("INSERT INTO config (cle, valeur) VALUES (%s, %s)", a_migrer)
+
+    # Vérification d'intégrité : on relit ce qu'on vient d'écrire avant de
+    # considérer la migration réussie, plutôt que de supposer que l'INSERT a
+    # forcément fonctionné pour chaque ligne.
+    await c.execute("SELECT cle FROM config")
+    desormais_en_base = {row[0] for row in await c.fetchall()}
+    manquantes = [cle for cle, _ in a_migrer if cle not in desormais_en_base]
+
+    if manquantes:
+        logger.critical(
+            "[migration config] Échec de la copie .env -> base pour : %s. "
+            "Ces réglages seront absents de `config` (donc traités comme non "
+            "configurés) tant que ce n'est pas corrigé manuellement en base.",
+            ", ".join(manquantes),
+        )
+    else:
+        logger.info(
+            "[migration config] %d variable(s) .env copiée(s) vers la table config : %s.",
+            len(a_migrer), ", ".join(cle for cle, _ in a_migrer),
+        )

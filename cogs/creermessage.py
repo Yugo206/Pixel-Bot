@@ -1,4 +1,7 @@
 # cogs/creermessage.py
+import logging
+from urllib.parse import urlparse
+
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -6,9 +9,20 @@ from discord import app_commands
 from cogs.tickets import TicketCreateView
 from cogs.recrutement import ConditionsSelect
 from cogs.trade import TradePanelView
+from utils.views import Modale, copie_vue
+
+logger = logging.getLogger(__name__)
 
 
-class MessagePersonnaliseModal(discord.ui.Modal, title="Message personnalisé"):
+def _message_erreur_envoi(e: discord.HTTPException) -> str:
+    """Message clair pour un envoi refusé par Discord, au lieu du texte brut de
+    l'exception."""
+    if isinstance(e, discord.Forbidden):
+        return "❌ Je n'ai pas la permission d'envoyer des messages (ou des embeds) dans ce salon."
+    return "❌ Discord a refusé le message : vérifie l'URL de l'image et la longueur du texte."
+
+
+class MessagePersonnaliseModal(Modale, title="Message personnalisé"):
     titre = discord.ui.TextInput(label="Titre", required=True, max_length=256)
     texte = discord.ui.TextInput(
         label="Texte du message", style=discord.TextStyle.paragraph, required=True, max_length=4000
@@ -21,10 +35,21 @@ class MessagePersonnaliseModal(discord.ui.Modal, title="Message personnalisé"):
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        # Revérifié à l'envoi : le formulaire a pu rester ouvert pendant qu'un
+        # administrateur perdait ses droits.
+        if not interaction.permissions.administrator:
+            await interaction.response.send_message(
+                "❌ Il faut être administrateur pour poster ce message.", ephemeral=True
+            )
+            return
+
         couleur_embed = discord.Color.blue()
-        if self.couleur.value:
+        # strip() d'abord : un champ optionnel qui ne contient que des espaces
+        # compte comme vide, au lieu d'être refusé comme couleur invalide.
+        couleur = (self.couleur.value or "").strip()
+        if couleur:
             try:
-                valeur = int(self.couleur.value.strip().lstrip("#"), 16)
+                valeur = int(couleur.lstrip("#"), 16)
                 # int() seul n'exclut pas les valeurs hors plage RGB (ex: 7 chiffres
                 # hexa sans #) : discord.Color ne fait lui-même aucune vérification
                 # de plage, ce qui ferait échouer l'envoi de l'embed plus loin avec
@@ -39,17 +64,30 @@ class MessagePersonnaliseModal(discord.ui.Modal, title="Message personnalisé"):
                 )
                 return
 
-        embed = discord.Embed(title=self.titre.value, description=self.texte.value, color=couleur_embed)
-        if self.image.value:
-            embed.set_image(url=self.image.value.strip())
+        image = self.image.value.strip() if self.image.value else ""
+        if image:
+            # Discord n'accepte qu'une URL http(s) : sans cette vérification,
+            # une faute de frappe faisait échouer l'envoi avec une erreur brute.
+            url = urlparse(image)
+            if url.scheme not in ("http", "https") or not url.netloc:
+                await interaction.response.send_message(
+                    "❌ URL d'image invalide : elle doit commencer par `https://`.", ephemeral=True
+                )
+                return
 
+        embed = discord.Embed(title=self.titre.value, description=self.texte.value, color=couleur_embed)
+        if image:
+            embed.set_image(url=image)
+
+        await interaction.response.defer(ephemeral=True)
         try:
             await interaction.channel.send(embed=embed)
         except discord.HTTPException as e:
-            await interaction.response.send_message(f"❌ Impossible d'envoyer le message : {e}", ephemeral=True)
+            logger.warning(f"[creer-message] Message personnalisé refusé dans {interaction.channel_id} : {e}")
+            await interaction.followup.send(_message_erreur_envoi(e), ephemeral=True)
             return
 
-        await interaction.response.send_message("✅ Message envoyé dans ce salon !", ephemeral=True)
+        await interaction.followup.send("✅ Message envoyé dans ce salon !", ephemeral=True)
 
 
 class CreerMessageCog(commands.Cog):
@@ -71,11 +109,16 @@ class CreerMessageCog(commands.Cog):
         app_commands.Choice(name="Trade-brainrot", value="trade"),
         app_commands.Choice(name="Personnalisé", value="personnalise"),
     ])
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
     @app_commands.checks.has_permissions(administrator=True)
     async def creer_message(self, interaction: discord.Interaction, message: app_commands.Choice[str]):
-        if interaction.guild is None:
+        # Les tickets sont des fils privés créés dans le salon du message : un
+        # fil ou un salon vocal ne peut pas en contenir, et chaque ouverture de
+        # ticket y échouait.
+        if message.value == "ticket" and not isinstance(interaction.channel, discord.TextChannel):
             await interaction.response.send_message(
-                "❌ Cette commande n'est pas disponible en MP. Utilise-la directement sur le serveur !",
+                "❌ Le message de ticket doit être posté dans un salon textuel (pas dans un fil ou un forum).",
                 ephemeral=True
             )
             return
@@ -89,17 +132,26 @@ class CreerMessageCog(commands.Cog):
             return
 
         await interaction.response.defer(ephemeral=True)
+        try:
+            await self._poster(interaction, message.value)
+        except discord.HTTPException as e:
+            logger.warning(f"[creer-message] Message {message.value} refusé dans {interaction.channel_id} : {e}")
+            await interaction.followup.send(_message_erreur_envoi(e), ephemeral=True)
 
-        if message.value == "ticket":
+    async def _poster(self, interaction: discord.Interaction, choix: str):
+        # Vues envoyées sous forme de copies (voir copie_vue dans
+        # utils/views.py) : les clics arrivent à l'instance enregistrée au
+        # démarrage, qui fait les vérifications.
+        if choix == "ticket":
             embed = discord.Embed(
                 title="Tu as un problème, une question ou un partenariat à proposer ?",
                 description="Viens en parler au staff en ouvrant un ticket",
                 color=discord.Color.green()
             )
             embed.add_field(name="Tickets abusifs", value="Tout ticket abusif sera sanctionné", inline=False)
-            await interaction.channel.send(embed=embed, view=TicketCreateView())
+            await interaction.channel.send(embed=embed, view=copie_vue(TicketCreateView, None, set()))
 
-        elif message.value == "recrutement":
+        elif choix == "recrutement":
             embed = discord.Embed(
                 title="Système de recrutement pour devenir modérateur",
                 description="Tu trouveras ici toutes les informations pour devenir **modérateur**.",
@@ -135,15 +187,15 @@ class CreerMessageCog(commands.Cog):
                 value="Clique sur le bouton ci-dessous pour commencer le recrutement.",
                 inline=False
             )
-            await interaction.channel.send(embed=embed, view=ConditionsSelect())
+            await interaction.channel.send(embed=embed, view=copie_vue(ConditionsSelect, None, set()))
 
-        elif message.value == "trade":
+        elif choix == "trade":
             embed = discord.Embed(
                 title="Trade ton brainrot !",
                 description="Tu veux échanger ou vendre un brainrot ? Clique sur le bouton ci-dessous pour créer ton annonce.",
                 color=discord.Color.blue()
             )
-            await interaction.channel.send(embed=embed, view=TradePanelView())
+            await interaction.channel.send(embed=embed, view=copie_vue(TradePanelView, None, set()))
 
         else:
             await interaction.followup.send("❌ Message inconnu.", ephemeral=True)

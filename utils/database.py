@@ -1,5 +1,6 @@
 import os
 import ssl
+from contextlib import asynccontextmanager
 
 import aiomysql
 from pymysql.constants import CLIENT
@@ -71,6 +72,41 @@ def get_pool() -> aiomysql.Pool:
     return _pool
 
 
+@asynccontextmanager
+async def connexion():
+    """Connexion du pool qui lit toujours les données à jour. À utiliser partout
+    à la place de get_pool().acquire() (seul init_db, au démarrage, reçoit le
+    pool directement).
+
+    Avec autocommit=False, InnoDB (REPEATABLE READ) fige une image de la base à
+    la première lecture d'une transaction, jusqu'au commit ou rollback. Une
+    connexion rendue au pool après de simples SELECT garde donc sa transaction
+    ouverte : aiomysql ne ferme une connexion que si le serveur la signale en
+    transaction, ce que MariaDB ne fait pas pour une lecture seule. Le code
+    suivant qui la récupère relit alors la base telle qu'elle était à ce
+    moment-là (ex. : un ticket fermé depuis, absent de /archive), et ce tant
+    que personne ne commit sur cette connexion.
+
+    Le rollback d'entrée repart d'une image neuve ; celui de sortie ne laisse
+    rien d'ouvert derrière soi (sans effet après un commit, et annule une
+    écriture interrompue par une exception au lieu de faire jeter la
+    connexion par le pool). Comme avec acquire(), l'appelant commit lui-même
+    ses écritures."""
+    async with get_pool().acquire() as conn:
+        await conn.rollback()
+        try:
+            yield conn
+        finally:
+            if not conn.closed:
+                try:
+                    await conn.rollback()
+                except aiomysql.Error:
+                    # Connexion inutilisable (coupée par le serveur...) : le pool
+                    # ne la réutilisera pas, et l'erreur d'origine reste celle qui
+                    # remonte à l'appelant.
+                    conn.close()
+
+
 async def close_pool():
     global _pool
     if _pool is not None:
@@ -111,6 +147,21 @@ async def increment_warn(conn, user_id: int) -> int:
     return new_warn
 
 
+async def compter_warns(conn, user_id: int) -> int:
+    """Nombre de warns réellement en cours pour user_id (table `warns`), sur la
+    connexion de l'appelant — à utiliser pour les paliers de sanction (voir
+    utils/sanctions.py) plutôt que le compteur utilisateurs.warn : ce dernier
+    est remis à zéro quand le membre quitte le serveur (la ligne `utilisateurs`
+    est supprimée, voir on_member_remove dans cogs/events.py), ce qui laissait
+    un membre repartir de 0 avertissement en quittant puis rejoignant le
+    serveur. Appelé dans la transaction qui vient d'insérer le warn, il le
+    compte déjà."""
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT COUNT(*) FROM warns WHERE user_id = %s", (user_id,))
+        (total,) = await cur.fetchone()
+    return int(total)
+
+
 async def decrement_warn(conn, user_id: int) -> int:
     """Décrémente utilisateurs.warn de 1 pour user_id (sans descendre sous 0) et
     renvoie la nouvelle valeur, de façon atomique — même principe qu'increment_warn
@@ -129,8 +180,7 @@ async def ajouter_rarete(user_id: int, rarete: str):
     if rarete not in RARETES_VALIDES:
         raise ValueError("Rareté invalide")
 
-    pool = get_pool()
-    async with pool.acquire() as conn:
+    async with connexion() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "INSERT IGNORE INTO utilisateurs (user_id) VALUES (%s)",

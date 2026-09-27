@@ -11,12 +11,12 @@ en boutique qui donne de l'XP) DOIT appeler invalidate_xp() juste après, pour
 ne pas laisser le cache dériver par rapport à la base.
 """
 
-import aiomysql
+from utils.database import connexion
 
 _xp_cache: dict[int, int] = {}
 
 
-async def get_xp(pool: aiomysql.Pool, user_id: int) -> int:
+async def get_xp(user_id: int) -> int:
     """Renvoie l'XP actuelle d'un membre depuis le cache si possible, sinon va la
     chercher en base (et crée la ligne si elle n'existe pas encore — même
     comportement que l'ancien INSERT IGNORE + SELECT, mais un seul aller-retour
@@ -24,7 +24,12 @@ async def get_xp(pool: aiomysql.Pool, user_id: int) -> int:
     if user_id in _xp_cache:
         return _xp_cache[user_id]
 
-    async with pool.acquire() as conn:
+    # connexion() : lecture à jour (voir utils/database.py). La valeur lue reste
+    # en cache jusqu'au départ du membre ou au prochain achat : lue sur une image
+    # figée, elle ferait dériver le cache (niveaux annoncés à tort). Et si la
+    # ligne a été créée après cette image, l'INSERT IGNORE ne fait rien mais le
+    # SELECT ne la voit pas : fetchone() renvoie None et la ligne suivante plante.
+    async with connexion() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
                 "INSERT IGNORE INTO utilisateurs (user_id, xp) VALUES (%s, 40)",
